@@ -7,9 +7,17 @@
 // 2. On each poll cycle, refresh inbox and look for NEW items (not in snapshot)
 // 3. Only extract codes from NEW items that match sender/subject filters
 
+(function() {
+if (window.__MULTIPAGE_QQ_MAIL_LOADED) {
+  console.log('[MultiPage:qq-mail] Content script already loaded on', location.href);
+  return;
+}
+window.__MULTIPAGE_QQ_MAIL_LOADED = true;
+
 const QQ_MAIL_PREFIX = '[MultiPage:qq-mail]';
 const isTopFrame = window === window.top;
 const { getStepMailMatchProfile, matchesSubjectPatterns } = MailMatching;
+const { isMailFresh, parseMailTimestampCandidates } = MailFreshness;
 const { getQqRefreshFolderSequence } = QqRefresh;
 
 console.log(QQ_MAIL_PREFIX, 'Content script loaded on', location.href, 'frame:', isTopFrame ? 'top' : 'child');
@@ -57,9 +65,17 @@ function getCurrentMailIds() {
 // ============================================================
 
 async function handlePollEmail(step, payload) {
-  const { senderFilters, subjectFilters, maxAttempts, intervalMs, excludeCodes = [] } = payload;
+  const {
+    senderFilters,
+    subjectFilters,
+    maxAttempts,
+    intervalMs,
+    filterAfterTimestamp = 0,
+    excludeCodes = [],
+  } = payload;
   const subjectProfile = getStepMailMatchProfile(step);
   const excludedCodeSet = new Set(excludeCodes);
+  const now = Date.now();
 
   log(`Step ${step}: Starting email poll (max ${maxAttempts} attempts, every ${intervalMs / 1000}s)`);
 
@@ -101,6 +117,7 @@ async function handlePollEmail(step, payload) {
       const sender = (item.querySelector('.cmp-account-nick')?.textContent || '').toLowerCase();
       const subject = (item.querySelector('.mail-subject')?.textContent || '').trim();
       const digest = item.querySelector('.mail-digest')?.textContent || '';
+      const emailTime = getQqEmailTimestamp(item, now);
       const subjectLower = subject.toLowerCase();
 
       const senderMatch = senderFilters.some(f => sender.includes(f.toLowerCase()));
@@ -108,6 +125,11 @@ async function handlePollEmail(step, payload) {
       const stepSpecificSubjectMatch = matchesSubjectPatterns(`${subject} ${digest}`, subjectProfile);
 
       if (stepSpecificSubjectMatch || (!subjectProfile && (senderMatch || subjectMatch))) {
+        if (!isMailFresh(emailTime, { now, filterAfterTimestamp })) {
+          log(`Step ${step}: Skipping stale QQ email (time: ${formatMailTimestampForLog(emailTime)})`, 'info');
+          continue;
+        }
+
         const code = extractVerificationCode(subject + ' ' + digest);
         if (code) {
           if (excludedCodeSet.has(code)) {
@@ -116,7 +138,7 @@ async function handlePollEmail(step, payload) {
           }
           const source = useFallback && existingMailIds.has(mailId) ? 'fallback-first-match' : 'new';
           log(`Step ${step}: Code found: ${code} (${source}, subject: ${subject.slice(0, 40)})`, 'ok');
-          return { ok: true, code, emailTimestamp: Date.now(), mailId };
+          return { ok: true, code, emailTimestamp: emailTime, mailId };
         }
       }
     }
@@ -134,6 +156,34 @@ async function handlePollEmail(step, payload) {
     `No new matching email found after ${(maxAttempts * intervalMs / 1000).toFixed(0)}s. ` +
     'Check QQ Mail manually. Email may be delayed or in spam folder.'
   );
+}
+
+function getQqEmailTimestamp(item, now = Date.now()) {
+  const candidates = [
+    item.querySelector('.mail-time')?.textContent,
+    item.querySelector('.mail-date')?.textContent,
+    item.querySelector('[class*="mail-time"]')?.textContent,
+    item.querySelector('[class*="mail-date"]')?.textContent,
+    item.querySelector('time')?.getAttribute('datetime'),
+    item.querySelector('time')?.textContent,
+    item.getAttribute('title'),
+    item.getAttribute('data-time'),
+    item.getAttribute('data-date'),
+    item.getAttribute('datetime'),
+  ];
+
+  return parseMailTimestampCandidates(candidates, { now });
+}
+
+function formatMailTimestampForLog(timestamp) {
+  if (!timestamp) {
+    return 'unknown';
+  }
+  try {
+    return new Date(timestamp).toLocaleString();
+  } catch {
+    return String(timestamp);
+  }
 }
 
 // ============================================================
@@ -321,11 +371,4 @@ function extractVerificationCode(text) {
 
   return null;
 }
-(function() {
-if (window.__MULTIPAGE_QQ_MAIL_LOADED) {
-  console.log('[MultiPage:qq-mail] Content script already loaded on', location.href);
-  return;
-}
-window.__MULTIPAGE_QQ_MAIL_LOADED = true;
-
 })();
