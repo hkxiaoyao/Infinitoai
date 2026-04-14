@@ -8,6 +8,7 @@ const STOP_ERROR_MESSAGE = 'Flow stopped by user.';
 const AUTO_RUN_HANDOFF_MESSAGE = 'Auto run handed off to manual continuation.';
 const HUMAN_STEP_DELAY_MIN = 700;
 const HUMAN_STEP_DELAY_MAX = 2200;
+const TMAILOR_API_CAPTCHA_COOLDOWN_MS = 3 * 60 * 1000;
 const { getStepDelayAfter, runStepSequence } = FlowRunner;
 const {
   buildMailPollRecoveryPlan,
@@ -39,7 +40,13 @@ const { mergeLoginVerificationCodeExclusions } = LoginVerificationCodes;
 const { DEFAULT_EMAIL_SOURCE, generate33MailAddress, get33MailDomainForProvider, sanitizeEmailSource } = EmailAddresses;
 const { chooseMailProviderForAutoRun, getConfiguredRotatableMailProviders, getNextMailProviderAvailabilityTimestamp, isRotatableMailProvider, pruneMailProviderUsage, recordMailProviderUsage } = MailProviderRotation;
 const { DEFAULT_TMAILOR_DOMAIN_STATE, extractEmailDomain, isAllowedTmailorDomain, mergeTmailorDomainStates, normalizeTmailorDomainState, recordTmailorDomainFailure, recordTmailorDomainSuccess, shouldBlacklistTmailorDomainForError } = TmailorDomains;
-const { checkTmailorApiConnectivity, fetchAllowedTmailorEmail, pollTmailorVerificationCode } = TmailorApi;
+const {
+  checkTmailorApiConnectivity,
+  createTmailorApiCaptchaCooldownUntil,
+  fetchAllowedTmailorEmail,
+  isTmailorApiCaptchaCooldownActive,
+  pollTmailorVerificationCode,
+} = TmailorApi;
 const { buildReclaimableTabRegistry, shouldPrepareSameUrlTabForReuse } = TabReclaim;
 const { getMailTabOpenUrlForStep, shouldNavigateMailTabOnStepStart } = FlowRecovery;
 const {
@@ -157,6 +164,7 @@ const DEFAULT_STATE = {
   }),
   tmailorDomainState: DEFAULT_TMAILOR_DOMAIN_STATE,
   tmailorAccessToken: '',
+  tmailorApiCaptchaCooldownUntil: 0,
   tmailorOutcomeRecorded: false,
   tmailorApiStatus: {
     ok: false,
@@ -393,6 +401,7 @@ async function setTmailorMailboxState(email, accessToken) {
   await setState({
     email,
     tmailorAccessToken: String(accessToken || '').trim(),
+    tmailorApiCaptchaCooldownUntil: 0,
     tmailorOutcomeRecorded: false,
     lastSignupVerificationCode: '',
   });
@@ -1279,7 +1288,10 @@ async function handleMessage(message, sender) {
     }
 
     case 'CHECK_TMAILOR_API_STATUS': {
-      const result = await checkTmailorApiConnectivity({});
+      const state = await getState();
+      const result = await checkTmailorApiConnectivity({
+        accessToken: state.tmailorAccessToken,
+      });
       const status = await setTmailorApiStatus(result);
       return { ok: true, tmailorApiStatus: status };
     }
@@ -1816,30 +1828,48 @@ async function fetchTmailorEmail(options = {}) {
   const { generateNew = true } = options;
   const state = await getState();
   const mailboxPageConfig = { source: 'tmailor-mail', url: 'https://tmailor.com/' };
+  const now = Date.now();
 
   if (generateNew) {
-    try {
-      await addLog('TMailor: Requesting a new mailbox via API...', 'info');
-      const result = await fetchAllowedTmailorEmail({
-        domainState: state.tmailorDomainState,
-        onAttempt: async (event) => {
+    if (isTmailorApiCaptchaCooldownActive(state.tmailorApiCaptchaCooldownUntil, now)) {
+      const waitMs = state.tmailorApiCaptchaCooldownUntil - now;
+      await addLog(
+        `TMailor API: Captcha cooldown is active for ${formatWaitDuration(waitMs)}. Skipping API mailbox creation and using the mailbox page flow instead.`,
+        'warn'
+      );
+    } else {
+      try {
+        await addLog('TMailor: Requesting a new mailbox via API...', 'info');
+        const result = await fetchAllowedTmailorEmail({
+          domainState: state.tmailorDomainState,
+          onAttempt: async (event) => {
+            await addLog(
+              `TMailor API: Refreshing mailbox attempt ${event.attempt}/${event.maxAttempts}...`,
+              'info'
+            );
+          },
+        });
+        markAutoRunCurrentSuccessMode('api');
+        await setTmailorMailboxState(result.email, result.accessToken);
+        await addLog(`TMailor API: Mailbox ready ${result.email} (token saved for API inbox polling).`, 'ok');
+        return result.email;
+      } catch (err) {
+        if (isTmailorApiCaptchaError(err)) {
+          const cooldownUntil = createTmailorApiCaptchaCooldownUntil({
+            now,
+            cooldownMs: TMAILOR_API_CAPTCHA_COOLDOWN_MS,
+          });
+          await setState({ tmailorApiCaptchaCooldownUntil: cooldownUntil });
+          await addLog(`TMailor API: New mailbox request failed: ${err.message}`, 'warn');
           await addLog(
-            `TMailor API: Refreshing mailbox attempt ${event.attempt}/${event.maxAttempts}...`,
-            'info'
+            `TMailor API: Pausing automatic mailbox API attempts for ${formatWaitDuration(TMAILOR_API_CAPTCHA_COOLDOWN_MS)} before retrying the API path.`,
+            'warn'
           );
-        },
-      });
-      markAutoRunCurrentSuccessMode('api');
-      await setTmailorMailboxState(result.email, result.accessToken);
-      await addLog(`TMailor API: Mailbox ready ${result.email} (token saved for API inbox polling).`, 'ok');
-      return result.email;
-    } catch (err) {
-      if (isTmailorApiCaptchaError(err)) {
-        await addLog(`TMailor API: New mailbox request failed: ${err.message}`, 'warn');
-        await addLog('TMailor API reported a captcha/block. Opening the mailbox page to inspect the challenge and auto-attempt it before manual takeover.', 'warn');
-      } else {
-        await addLog(`TMailor API: New mailbox request failed: ${err.message}`, 'warn');
-        await addLog('TMailor: Falling back to the mailbox page flow for address generation.', 'warn');
+          await addLog('TMailor API reported a captcha/block. Opening the mailbox page to inspect the challenge and auto-attempt it before manual takeover.', 'warn');
+        } else {
+          await addLog(`TMailor API: New mailbox request failed: ${err.message}`, 'warn');
+          await addLog('TMailor: Falling back to the mailbox page flow for address generation.', 'warn');
+        }
       }
     }
   }

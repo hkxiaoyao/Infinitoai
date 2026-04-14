@@ -117,6 +117,20 @@
     return error;
   }
 
+  function createTmailorApiCaptchaCooldownUntil(options) {
+    const config = options || {};
+    const now = Number.isFinite(config.now) ? config.now : Date.now();
+    const cooldownMs = Number.isFinite(config.cooldownMs) ? config.cooldownMs : 0;
+    if (cooldownMs <= 0) {
+      return 0;
+    }
+    return now + cooldownMs;
+  }
+
+  function isTmailorApiCaptchaCooldownActive(cooldownUntil, now = Date.now()) {
+    return Number.isFinite(cooldownUntil) && cooldownUntil > now;
+  }
+
   async function runWithTimeout(taskFactory, options) {
     const config = options || {};
     const timeoutMs = Number.isFinite(config.timeoutMs) ? config.timeoutMs : 0;
@@ -257,10 +271,20 @@
   async function checkTmailorApiConnectivity(options) {
     try {
       await warmupTmailorSession(options);
+      const accessToken = String(options?.accessToken || '').trim();
+      if (!accessToken) {
+        return {
+          ok: true,
+          status: 'ok',
+          message: 'API is reachable.',
+        };
+      }
+
       const data = await callTmailorApi({
-        action: 'newemail',
+        action: 'listinbox',
         payload: {
-          curentToken: null,
+          accesstoken: accessToken,
+          curentToken: accessToken,
         },
         fetchImpl: options?.fetchImpl,
         baseUrl: options?.baseUrl,
@@ -639,11 +663,13 @@
 
   return {
     checkTmailorApiConnectivity: checkTmailorApiConnectivity,
+    createTmailorApiCaptchaCooldownUntil: createTmailorApiCaptchaCooldownUntil,
     DEFAULT_BASE_URL: DEFAULT_BASE_URL,
     buildApiUrl: buildApiUrl,
     callTmailorApi: callTmailorApi,
     extractVerificationCode: extractVerificationCode,
     fetchAllowedTmailorEmail: fetchAllowedTmailorEmail,
+    isTmailorApiCaptchaCooldownActive: isTmailorApiCaptchaCooldownActive,
     normalizeInboxMessages: normalizeInboxMessages,
     parseJsonResponse: parseJsonResponse,
     parseMessageTimestamp: parseMessageTimestamp,
