@@ -261,7 +261,7 @@ async function fillVerificationCode(step, payload) {
       throw new Error('Auth fatal error page detected before verification code input appeared.');
     }
     if (step === 7 && isPhoneVerificationRequiredText(visibleText)) {
-      throw new Error(getPhoneVerificationBlockedMessage(step, location.href));
+      throw new Error(getPhoneVerificationBlockedMessage(step));
     }
     throw new Error('Could not find verification code input. URL: ' + location.href);
   }
@@ -310,7 +310,7 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
       throw new Error(getUnsupportedEmailBlockedMessage(step));
     }
     if (step === 7 && isPhoneVerificationRequiredText(visibleText)) {
-      throw new Error(getPhoneVerificationBlockedMessage(step, location.href));
+      throw new Error(getPhoneVerificationBlockedMessage(step));
     }
     if (isVerificationCodeRejectedText(visibleText) && !hadRejectedStateBeforeSubmit) {
       return {

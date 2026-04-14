@@ -198,7 +198,7 @@ test('step 7 fails the round when email verification page has retry text but no 
   ]);
 });
 
-test('step 7 reports the current auth domain when phone verification is required before the code input appears', async () => {
+test('step 7 reports the phone-verification blocker without auth-domain decoration before the code input appears', async () => {
   const context = createContext({
     href: 'https://accounts.openai.com/account/email-verification',
     bodyText: 'Verify your phone number to continue',
@@ -221,7 +221,7 @@ test('step 7 reports the current auth domain when phone verification is required
 
   assert.equal(
     response?.error,
-    'Step 7 blocked: phone number is required on the auth page (domain: accounts.openai.com). Please change node and retry.'
+    'Step 7 blocked: phone number is required on the auth page. Please change node and retry.'
   );
   assert.deepEqual(context.__errors, [
     {

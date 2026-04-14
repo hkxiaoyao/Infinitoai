@@ -21,7 +21,7 @@ test('does not flag unrelated OAuth consent text', () => {
 
 test('step 7 phone verification message suggests changing node', () => {
   assert.equal(
-    getPhoneVerificationBlockedMessage(7, 'https://auth.openai.com/u/login/password'),
-    'Step 7 blocked: phone number is required on the auth page (domain: auth.openai.com). Please change node and retry.'
+    getPhoneVerificationBlockedMessage(7),
+    'Step 7 blocked: phone number is required on the auth page. Please change node and retry.'
   );
 });
