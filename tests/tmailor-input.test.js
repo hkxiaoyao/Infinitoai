@@ -20,3 +20,10 @@ test('pickTmailorCandidate falls back to clipboard contents when the input is em
     { candidate: 'clipboard@example.com', source: 'clipboard' }
   );
 });
+
+test('pickTmailorCandidate can prefer clipboard contents over stale input during paste validation', () => {
+  assert.deepEqual(
+    pickTmailorCandidate('stale@example.com', 'clipboard@example.com', { preferClipboard: true }),
+    { candidate: 'clipboard@example.com', source: 'clipboard' }
+  );
+});

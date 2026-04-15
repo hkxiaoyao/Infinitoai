@@ -13,7 +13,15 @@
     return (match?.[0] || text).trim();
   }
 
-  function pickTmailorCandidate(inputValue, clipboardText) {
+  function pickTmailorCandidate(inputValue, clipboardText, options = {}) {
+    const preferClipboard = Boolean(options?.preferClipboard);
+    if (preferClipboard) {
+      const clipboardCandidate = extractEmailCandidate(clipboardText);
+      if (clipboardCandidate) {
+        return { candidate: clipboardCandidate, source: 'clipboard' };
+      }
+    }
+
     const inputCandidate = extractEmailCandidate(inputValue);
     if (inputCandidate) {
       return { candidate: inputCandidate, source: 'input' };
