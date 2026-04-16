@@ -120,29 +120,53 @@ async function step2_clickRegister() {
     }
   }
 
-  let registerBtn = null;
-  try {
-    registerBtn = await waitForElementByText(
-      'a, button, [role="button"], [role="link"]',
-      /sign\s*up|register|create\s*account|注册/i,
-      10000
-    );
-  } catch {
-    // Some pages may have a direct link
-    try {
-      registerBtn = await waitForElement('a[href*="signup"], a[href*="register"]', 5000);
-    } catch {
-      throw new Error(
-        'Could not find Register/Sign up button. ' +
-        'Check auth page DOM in DevTools. URL: ' + location.href
-      );
-    }
+  const registerBtn = await findStep2RegisterButtonWithRecovery();
+  if (!registerBtn) {
+    log('Step 2: Official signup form is already visible after auth-issue recovery. Continuing without clicking Register.', 'info');
+    reportComplete(2);
+    return;
   }
 
   await humanPause(450, 1200);
   await reportStepCompleteBeforePotentialNavigation(2);
   simulateClick(registerBtn);
   log('Step 2: Clicked Register button');
+}
+
+async function findStep2RegisterButtonWithRecovery() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await waitForElementByText(
+        'a, button, [role="button"], [role="link"]',
+        /sign\s*up|register|create\s*account|注册/i,
+        10000
+      );
+    } catch {}
+
+    // Some pages may have a direct link
+    try {
+      return await waitForElement('a[href*="signup"], a[href*="register"]', 5000);
+    } catch {}
+
+    if (isDirectSignupFormVisible()) {
+      return null;
+    }
+
+    const recoveredFromIssuePage = await recoverPlatformEntryFromAuthIssueIfNeeded();
+    if (!recoveredFromIssuePage) {
+      break;
+    }
+
+    await waitForPlatformEntryStateToSettle(5000);
+    if (isDirectSignupFormVisible()) {
+      return null;
+    }
+  }
+
+  throw new Error(
+    'Could not find Register/Sign up button. ' +
+    'Check auth page DOM in DevTools. URL: ' + location.href
+  );
 }
 
 async function reportStepCompleteBeforePotentialNavigation(step, data) {
