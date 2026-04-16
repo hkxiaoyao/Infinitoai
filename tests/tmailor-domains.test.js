@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  addTmailorDomainsToWhitelist,
   clearTmailorDomainStats,
   DEFAULT_TMAILOR_DOMAIN_STATE,
   DEFAULT_TMAILOR_WHITELIST,
@@ -162,19 +163,41 @@ test('moveTmailorDomainToBlacklist can manually blacklist a built-in whitelist d
   assert.equal(nextState.blacklist.includes('mikfarm.com'), true);
 });
 
-test('shouldBlacklistTmailorDomainForError blacklists non-whitelisted .com domains for auth-blocking failures', () => {
+test('addTmailorDomainsToWhitelist normalizes multiple domains, removes them from blacklist, and preserves stats', () => {
+  const nextState = addTmailorDomainsToWhitelist(
+    normalizeTmailorDomainState({
+      whitelist: ['alpha.com'],
+      blacklist: ['beta.com', 'gamma.com'],
+      stats: {
+        'beta.com': { successCount: 3, failureCount: 4 },
+        'gamma.com': { successCount: 1, failureCount: 2 },
+      },
+    }),
+    [' @Beta.com ', 'gamma.com', 'alpha.com', '', 'beta.com']
+  );
+
+  assert.equal(nextState.whitelist.includes('alpha.com'), true);
+  assert.equal(nextState.whitelist.includes('beta.com'), true);
+  assert.equal(nextState.whitelist.includes('gamma.com'), true);
+  assert.equal(nextState.blacklist.includes('beta.com'), false);
+  assert.equal(nextState.blacklist.includes('gamma.com'), false);
+  assert.deepEqual(nextState.stats['beta.com'], { successCount: 3, failureCount: 4 });
+  assert.deepEqual(nextState.stats['gamma.com'], { successCount: 1, failureCount: 2 });
+});
+
+test('shouldBlacklistTmailorDomainForError applies the stricter step 5 and step 7 blacklist rules', () => {
   const state = normalizeTmailorDomainState();
 
   assert.equal(
-    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 4 blocked: email domain is unsupported on the auth page.'),
+    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 5 blocked: email domain is unsupported on the auth page.'),
     true
   );
   assert.equal(
-    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 4 failed: 验证过程中出错 (unsupported_email)。请重试。'),
+    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 5 failed: 验证过程中出错 (unsupported_email)。请重试。'),
     true
   );
   assert.equal(
-    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 8 blocked: auth page still requires phone verification.'),
+    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 5 failed: profile submit did not reach a stable next page. URL: https://auth.openai.com/about-you'),
     true
   );
   assert.equal(
@@ -186,19 +209,27 @@ test('shouldBlacklistTmailorDomainForError blacklists non-whitelisted .com domai
     true
   );
   assert.equal(
-    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 5 failed: Auth fatal error page detected after profile submit.'),
+    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 7 failed: Verification form stayed visible after submit attempts. URL: https://auth.openai.com/about-you'),
     true
   );
   assert.equal(
-    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 5 failed: Could not find name input. URL: https://auth.openai.com/u/signup/continue'),
+    shouldBlacklistTmailorDomainForError(state, 'mikfarm.com', 'Step 5 failed: 验证过程中出错 (unsupported_email)。请重试。'),
     true
   );
   assert.equal(
-    shouldBlacklistTmailorDomainForError(state, 'mikfarm.com', 'Step 8 blocked: auth page still requires phone verification.'),
+    shouldBlacklistTmailorDomainForError(state, 'mikfarm.com', 'Step 5 failed: Auth fatal error page detected after profile submit.'),
     false
   );
   assert.equal(
-    shouldBlacklistTmailorDomainForError(state, 'unknown-good.net', 'Step 4 blocked: email domain is unsupported on the auth page.'),
+    shouldBlacklistTmailorDomainForError(state, 'mikfarm.com', 'Step 7 failed: Verification form stayed visible after submit attempts. URL: https://auth.openai.com/add-phone'),
+    false
+  );
+  assert.equal(
+    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 4 blocked: email domain is unsupported on the auth page.'),
+    true
+  );
+  assert.equal(
+    shouldBlacklistTmailorDomainForError(state, 'unknown-good.net', 'Step 5 blocked: email domain is unsupported on the auth page.'),
     false
   );
 });

@@ -347,6 +347,39 @@
     });
   }
 
+  function addTmailorDomainsToWhitelist(state, domains = []) {
+    const normalizedState = normalizeTmailorDomainState(state);
+    const normalizedDomains = normalizeDomainList(domains);
+    if (normalizedDomains.length === 0) {
+      return normalizedState;
+    }
+
+    const whitelistSet = new Set(normalizedState.whitelist);
+    const blacklistSet = new Set(normalizedState.blacklist);
+    let changed = false;
+
+    for (const domain of normalizedDomains) {
+      if (!whitelistSet.has(domain)) {
+        whitelistSet.add(domain);
+        changed = true;
+      }
+      if (blacklistSet.delete(domain)) {
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return normalizedState;
+    }
+
+    return normalizeTmailorDomainState({
+      whitelist: [...whitelistSet],
+      blacklist: [...blacklistSet],
+      stats: normalizedState.stats,
+      mode: normalizedState.mode,
+    });
+  }
+
   function clearTmailorDomainStats(state, domains = [], metric = '') {
     const normalizedState = normalizeTmailorDomainState(state);
     const normalizedMetric = String(metric || '').trim().toLowerCase();
@@ -383,9 +416,9 @@
       return false;
     }
     const normalizedState = normalizeTmailorDomainState(state);
-    if (normalizedState.whitelist.includes(normalizedDomain)) {
-      return false;
-    }
+    const isWhitelistedDomain = normalizedState.whitelist.includes(normalizedDomain);
+    const isStep5Error = /(?:^|\b)step 5\b/i.test(message);
+    const isStep7Error = /(?:^|\b)step 7\b/i.test(message);
 
     const matchesEmailUnsupported =
       message.includes('email domain is unsupported') ||
@@ -400,6 +433,20 @@
     const matchesFatal = message.includes('auth fatal error page detected after profile submit');
     const matchesMissingNameInput = message.includes('could not find name input');
 
+    // Step 5 unsupported_email is the strictest blacklist marker: even whitelisted
+    // domains must be evicted so future runs do not reuse them.
+    if (isStep5Error && matchesEmailUnsupported) {
+      return true;
+    }
+
+    if (isWhitelistedDomain) {
+      return false;
+    }
+
+    if (isStep5Error || isStep7Error) {
+      return true;
+    }
+
     return matchesEmailUnsupported || matchesPhoneVerification || matchesFatal || matchesMissingNameInput;
   }
 
@@ -409,6 +456,7 @@
     DEFAULT_TMAILOR_STATS,
     DEFAULT_TMAILOR_WHITELIST,
     TMAILOR_DOMAIN_MODES,
+    addTmailorDomainsToWhitelist,
     clearTmailorDomainStats,
     cloneStats,
     extractEmailDomain,
