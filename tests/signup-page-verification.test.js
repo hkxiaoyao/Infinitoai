@@ -3030,6 +3030,107 @@ test('step 4 succeeds when the page switches to the profile form on the same url
   assert.equal(context.__completions[0].step, 4);
 });
 
+test('step 4 succeeds when the page already reached about-you before the profile copy becomes stable', async () => {
+  let fakeNow = 0;
+  const codeInput = {
+    inputMode: 'numeric',
+    getBoundingClientRect() {
+      return { width: 120, height: 40 };
+    },
+    dispatchEvent() {},
+    focus() {},
+  };
+  const submitButton = {
+    textContent: '继续',
+    disabled: false,
+    getAttribute() {
+      return null;
+    },
+    getBoundingClientRect() {
+      return { width: 160, height: 44 };
+    },
+  };
+  const ageInput = {
+    inputMode: 'numeric',
+    getBoundingClientRect() {
+      return { width: 120, height: 40 };
+    },
+  };
+  const nameInput = {
+    getBoundingClientRect() {
+      return { width: 240, height: 40 };
+    },
+  };
+
+  const context = createContext({
+    href: 'https://auth.openai.com/email-verification',
+    bodyText: '检查您的收件箱 输入我们刚刚发送的验证码',
+    waitForElementImpl(selector) {
+      if (selector.includes('input[name="code"]')) {
+        return Promise.resolve(codeInput);
+      }
+      return Promise.reject(new Error(`missing: ${selector}`));
+    },
+    querySelectorImpl(selector) {
+      if (selector === 'button[type="submit"]') {
+        return submitButton;
+      }
+      return null;
+    },
+    querySelectorAllImpl(selector) {
+      const onAboutYou = /about-you/i.test(context.location.href);
+      if (selector === 'input[name="code"]') {
+        return onAboutYou ? [] : [codeInput];
+      }
+      if (selector === 'input[inputmode="numeric"]') {
+        return onAboutYou ? [ageInput] : [codeInput];
+      }
+      if (selector === 'input[name="name"]') {
+        return onAboutYou ? [nameInput] : [];
+      }
+      if (selector === 'input[name="age"]') {
+        return onAboutYou ? [ageInput] : [];
+      }
+      return [];
+    },
+  });
+  context.Date = class extends Date {
+    static now() {
+      return fakeNow;
+    }
+  };
+  context.fillInput = () => {};
+  context.sleep = (ms = 0) => {
+    fakeNow += Math.max(1, Number(ms) || 0);
+    return Promise.resolve();
+  };
+  context.simulateClick = (target) => {
+    if (target === submitButton) {
+      context.location.href = 'https://auth.openai.com/about-you';
+      context.document.body.innerText = '检查您的收件箱 输入我们刚刚发送的验证码';
+    }
+  };
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'FILL_CODE', step: 4, payload: { code: '123456' } },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 3000);
+  });
+
+  assert.equal(response?.ok, true);
+  assert.deepEqual(context.__errors, []);
+  assert.equal(context.__completions.length, 1);
+  assert.equal(context.__completions[0].step, 4);
+});
+
 test('step 5 completes and lets the flow continue when the profile form never appears after verification', async () => {
   const context = createContext({
     href: 'https://auth.openai.com/u/signup/continue',

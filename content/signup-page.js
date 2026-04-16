@@ -897,6 +897,9 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
     const visibleText = getVisiblePageText();
     const hasVisibleProfileInput = hasVisibleProfileFormInput();
     const onReadyProfilePage = hasReadyProfilePage(visibleText);
+    const onCanonicalAboutYouProfilePage = step === 4
+      && isCanonicalAboutYouPage(location.href)
+      && hasVisibleProfileInput;
     const hasVisibleVerificationInputNow = hasVisibleVerificationInput();
     const hasVisibleInput = hasActiveVerificationInput();
     if (isAuthFatalErrorText(visibleText)) {
@@ -918,10 +921,12 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
       throw new Error('Verification page entered retry state after submitting the verification code. Restart this run.');
     }
 
-    if (location.href !== startUrl || onReadyProfilePage) {
+    if (location.href !== startUrl || onReadyProfilePage || onCanonicalAboutYouProfilePage) {
       return {
         accepted: true,
-        reason: onReadyProfilePage ? 'profile-form-visible' : 'page-advanced',
+        reason: onReadyProfilePage
+          ? 'profile-form-visible'
+          : (onCanonicalAboutYouProfilePage ? 'canonical-about-you-profile-page' : 'page-advanced'),
       };
     }
 
@@ -939,6 +944,13 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
     return {
       retryInbox: true,
       reason: 'verification-still-blocked',
+    };
+  }
+
+  if (step === 4 && isCanonicalAboutYouPage(location.href) && hasVisibleProfileFormInput()) {
+    return {
+      accepted: true,
+      reason: 'canonical-about-you-profile-page',
     };
   }
 
@@ -973,6 +985,10 @@ function hasProfileContextText(text = getVisiblePageText()) {
 
 function isCanonicalEmailVerificationPage(url = location.href) {
   return /(?:auth|accounts)\.openai\.com\/(?:account\/)?email-verification/i.test(String(url || ''));
+}
+
+function isCanonicalAboutYouPage(url = location.href) {
+  return /(?:auth|accounts)\.openai\.com\/about-you/i.test(String(url || ''));
 }
 
 function hasReadyVerificationPage(text = getVisiblePageText()) {
