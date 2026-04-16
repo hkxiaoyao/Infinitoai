@@ -55,10 +55,10 @@
 
   function shouldRetryStep6WithFreshOauth(error) {
     const message = typeof error === 'string' ? error : error?.message || '';
-    return /step 6 failed: could not find email input on login page\.\s*url:\s*https:\/\/(?:auth|accounts)\.openai\.com\/\S+/i.test(message)
-      || /step 6 recoverable: auth issue page offered a "return home" recovery link\./i.test(message)
-      || /step 6 failed: auth fatal error page detected after login submit\./i.test(message)
-      || /step 6 failed: login did not advance after password submit\. still on the password page\./i.test(message);
+    return /(?:step 6 failed:\s*)?could not find email input on login page\.\s*url:\s*https:\/\/(?:auth|accounts)\.openai\.com\/\S+/i.test(message)
+      || /(?:step 6 recoverable:\s*)?auth issue page offered a "return home" recovery link\./i.test(message)
+      || /(?:step 6 failed:\s*)?auth fatal error page detected after login submit\./i.test(message)
+      || /(?:step 6 failed:\s*)?login did not advance after password submit\. still on the password page\./i.test(message);
   }
 
   function shouldRetryStep8WithFreshOauth(error) {
@@ -77,7 +77,10 @@
       return false;
     }
 
-    if (/phone verification|phone number is required|change node and retry/i.test(message)) {
+    if (
+      /phone verification|phone number is required|change node and retry/i.test(message)
+      || /verification form stayed visible after submit attempts\.\s*url:\s*https:\/\/(?:auth|accounts)\.openai\.com\/add-phone(?:[/?#]\S*)?/i.test(message)
+    ) {
       return false;
     }
 

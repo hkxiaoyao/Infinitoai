@@ -129,7 +129,15 @@ test('step 6 auth-page stalls trigger a fresh oauth retry plan', () => {
     true
   );
   assert.equal(
+    shouldRetryStep6WithFreshOauth('Could not find email input on login page. URL: https://auth.openai.com/sign-in-with-chatgpt/codex/consent'),
+    true
+  );
+  assert.equal(
     shouldRetryStep6WithFreshOauth('Step 6 failed: Login did not advance after password submit. Still on the password page.'),
+    true
+  );
+  assert.equal(
+    shouldRetryStep6WithFreshOauth('Login did not advance after password submit. Still on the password page.'),
     true
   );
   assert.equal(
@@ -137,7 +145,15 @@ test('step 6 auth-page stalls trigger a fresh oauth retry plan', () => {
     true
   );
   assert.equal(
+    shouldRetryStep6WithFreshOauth('Auth issue page offered a "return home" recovery link. Refresh the VPS OAuth link and retry with the same email and password.'),
+    true
+  );
+  assert.equal(
     shouldRetryStep6WithFreshOauth('Step 6 failed: Auth fatal error page detected after login submit.'),
+    true
+  );
+  assert.equal(
+    shouldRetryStep6WithFreshOauth('Auth fatal error page detected after login submit.'),
     true
   );
   assert.equal(
@@ -175,6 +191,10 @@ test('steps 7-9 generally retry once from step 6 after recoverable failures', ()
 test('steps 7-9 do not retry from step 6 for hard blockers or unrelated steps', () => {
   assert.equal(
     shouldRetryStep7Through9FromStep6(7, 'Step 7 blocked: phone number is required on the auth page. Please change node and retry.'),
+    false
+  );
+  assert.equal(
+    shouldRetryStep7Through9FromStep6(7, 'Step 7 failed: Verification form stayed visible after submit attempts. URL: https://auth.openai.com/add-phone'),
     false
   );
   assert.equal(
