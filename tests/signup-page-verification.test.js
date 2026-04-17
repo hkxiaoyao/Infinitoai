@@ -1387,6 +1387,120 @@ test('step 3 clicks register instead of treating the login password page as an e
   );
 });
 
+test('step 3 recovers from a login password page retry when the auth page still exposes a signup path', async () => {
+  const state = {
+    stage: 'login-password',
+  };
+
+  const passwordInput = {
+    getBoundingClientRect() {
+      return { width: 220, height: 42 };
+    },
+  };
+  const registerButton = {
+    tagName: 'A',
+    textContent: '请注册',
+    innerText: '请注册',
+    getBoundingClientRect() {
+      return { width: 160, height: 32 };
+    },
+    closest() {
+      return null;
+    },
+  };
+  const signupContinueButton = {
+    textContent: '继续',
+    getBoundingClientRect() {
+      return { width: 240, height: 48 };
+    },
+  };
+
+  const filledValues = [];
+  const clickedTargets = [];
+
+  const context = createContext({
+    href: 'https://auth.openai.com/log-in/password',
+    bodyText: '输入密码 还没有帐户？请注册',
+    waitForElementImpl(selector) {
+      if (selector === 'input[type="password"]' && state.stage === 'signup-password') {
+        return Promise.resolve(passwordInput);
+      }
+      return Promise.reject(new Error(`missing: ${selector}`));
+    },
+    waitForElementByTextImpl(_selector, pattern) {
+      if (/sign\s*up|register|create\s*account|请注册|去注册|注册/i.test(String(pattern)) && state.stage === 'login-password') {
+        return Promise.resolve(registerButton);
+      }
+      if (/continue|sign\s*up|submit|注册|创建|create|继续/i.test(String(pattern)) && state.stage === 'signup-password') {
+        return Promise.resolve(signupContinueButton);
+      }
+      return Promise.reject(new Error('missing'));
+    },
+    querySelectorImpl(selector) {
+      if (selector === 'button[type="submit"]' && state.stage === 'signup-password') {
+        return signupContinueButton;
+      }
+      return null;
+    },
+    querySelectorAllImpl(selector) {
+      if (selector === 'input[type="password"]' && (state.stage === 'login-password' || state.stage === 'signup-password')) {
+        return [passwordInput];
+      }
+      if (selector === 'a, button, [role="button"], [role="link"], span' && state.stage === 'login-password') {
+        return [registerButton];
+      }
+      return [];
+    },
+  });
+  context.fillInput = (_target, value) => {
+    filledValues.push(value);
+  };
+  context.simulateClick = (target) => {
+    clickedTargets.push(target);
+    if (target === registerButton) {
+      state.stage = 'signup-password';
+      context.location.href = 'https://auth.openai.com/create-account/password';
+      context.document.body.innerText = '创建密码 继续';
+      return;
+    }
+    if (target === signupContinueButton) {
+      context.location.href = 'https://auth.openai.com/email-verification';
+      context.document.body.innerText = 'Enter verification code';
+    }
+  };
+
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'EXECUTE_STEP', step: 3, payload: { email: 'demo@example.com', password: 'secret-pass' } },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 3000);
+  });
+
+  assert.equal(response?.ok, true);
+  assert.deepEqual(filledValues, ['secret-pass']);
+  assert.deepEqual(clickedTargets, [registerButton, signupContinueButton]);
+  assert.deepEqual(context.__errors, []);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.__completions)),
+    [
+      {
+        step: 3,
+        payload: {
+          email: 'demo@example.com',
+        },
+      },
+    ]
+  );
+});
+
 test('step 3 refuses to start typing until the auth page is actually on the signup flow', async () => {
   const emailInput = {
     getBoundingClientRect() {

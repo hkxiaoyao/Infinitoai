@@ -729,6 +729,9 @@ async function waitForStep3SignupContext(timeout = 8000) {
     if (isDirectPlatformLoginStep3Entry(location.href)) {
       return true;
     }
+    if (isSignupFlowUnexpectedlyOnLoginPasswordPage()) {
+      return true;
+    }
     if (isStep3AlreadyAdvancedPage(visibleText, location.href)) {
       return true;
     }
