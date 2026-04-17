@@ -7,6 +7,7 @@ const {
   buildAutoRunStatusPayload,
   buildAutoRunFailureRecord,
   formatAutoRunLabel,
+  getAutoRunActiveWatchdogAlarmName,
   getAutoRunPauseWatchdogAlarmName,
   getAutoRunPauseWatchdogDeadline,
   shouldContinueAutoRunAfterWatchdog,
@@ -104,6 +105,10 @@ test('infinite email handoff pauses use a persistent watchdog alarm', () => {
   assert.equal(
     getAutoRunPauseWatchdogAlarmName(),
     'infinitoai-auto-run-paused-watchdog'
+  );
+  assert.equal(
+    getAutoRunActiveWatchdogAlarmName(),
+    'infinitoai-auto-run-active-watchdog'
   );
   assert.equal(
     getAutoRunPauseWatchdogDeadline({

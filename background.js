@@ -32,6 +32,7 @@ const {
   buildAutoRunStatusPayload,
   buildAutoRunFailureRecord,
   formatAutoRunLabel,
+  getAutoRunActiveWatchdogAlarmName,
   getAutoRunPauseWatchdogAlarmName,
   getAutoRunPauseWatchdogDeadline,
   isAutoRunLogSilenceError,
@@ -263,6 +264,7 @@ const DEFAULT_STATE = {
   password: null,
   accounts: [], // { email, password, createdAt }
   lastEmailTimestamp: null,
+  lastTargetEmailAcquiredAt: null,
   lastSignupVerificationCode: '',
   localhostUrl: null,
   existingAccountLogin: false,
@@ -294,6 +296,7 @@ const DEFAULT_STATE = {
     message: 'TMailor API not checked yet.',
   },
   emailLease: null,
+  autoRunActiveWatchdog: null,
   autoRunPauseWatchdog: null,
   mailProviderUsage: {
     '163': [],
@@ -517,20 +520,31 @@ async function setMailProviderState(mailProvider) {
   return nextProvider;
 }
 
-async function setEmailState(email) {
-  await setState({ email, lastSignupVerificationCode: '' });
-  broadcastDataUpdate({ email });
+async function setEmailState(email, options = {}) {
+  const trimmedEmail = String(email || '').trim();
+  const currentState = trimmedEmail ? null : await getState();
+  const nextTargetEmailAcquiredAt = trimmedEmail
+    ? (Number.isFinite(options.lastTargetEmailAcquiredAt) ? options.lastTargetEmailAcquiredAt : Date.now())
+    : (Number.isFinite(currentState?.lastTargetEmailAcquiredAt) ? currentState.lastTargetEmailAcquiredAt : null);
+  await setState({
+    email,
+    lastSignupVerificationCode: '',
+    lastTargetEmailAcquiredAt: nextTargetEmailAcquiredAt,
+  });
+  broadcastDataUpdate({ email, lastTargetEmailAcquiredAt: nextTargetEmailAcquiredAt });
 }
 
 async function setTmailorMailboxState(email, accessToken) {
+  const nextTargetEmailAcquiredAt = Date.now();
   await setState({
     email,
     tmailorAccessToken: String(accessToken || '').trim(),
     tmailorApiCaptchaCooldownUntil: 0,
     tmailorOutcomeRecorded: false,
     lastSignupVerificationCode: '',
+    lastTargetEmailAcquiredAt: nextTargetEmailAcquiredAt,
   });
-  broadcastDataUpdate({ email });
+  broadcastDataUpdate({ email, lastTargetEmailAcquiredAt: nextTargetEmailAcquiredAt });
 }
 
 async function setTmailorDomainState(nextState) {
@@ -1520,13 +1534,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 if (chrome.alarms?.onAlarm) {
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm?.name !== getAutoRunPauseWatchdogAlarmName()) {
+    if (alarm?.name === getAutoRunPauseWatchdogAlarmName()) {
+      handlePersistentAutoRunPauseWatchdogAlarm().catch((err) => {
+        console.error(LOG_PREFIX, 'Persistent auto-run pause watchdog failed:', err);
+      });
       return;
     }
 
-    handlePersistentAutoRunPauseWatchdogAlarm().catch((err) => {
-      console.error(LOG_PREFIX, 'Persistent auto-run pause watchdog failed:', err);
-    });
+    if (alarm?.name === getAutoRunActiveWatchdogAlarmName()) {
+      handlePersistentActiveAutoRunWatchdogAlarm().catch((err) => {
+        console.error(LOG_PREFIX, 'Persistent auto-run active watchdog failed:', err);
+      });
+    }
   });
 }
 
@@ -1563,7 +1582,41 @@ async function handlePersistentAutoRunPauseWatchdogAlarm() {
     return;
   }
 
-  await finalizePersistentAutoRunPauseWatchdogTimeout(error, state, context, lastLogEntry);
+  await finalizePersistentAutoRunWatchdogTimeout(error, state, context, lastLogEntry);
+}
+
+async function handlePersistentActiveAutoRunWatchdogAlarm() {
+  const state = await getState();
+  const context = getNormalizedAutoRunPauseWatchdogContext(state.autoRunActiveWatchdog);
+  if (!context || context.phase !== 'running') {
+    await clearPersistentAutoRunActiveWatchdog();
+    return;
+  }
+
+  if (!state.autoRunning) {
+    await clearPersistentAutoRunActiveWatchdog();
+    return;
+  }
+
+  if (context.deadlineAt > Date.now() + 250) {
+    if (chrome.alarms?.create) {
+      await chrome.alarms.create(getAutoRunActiveWatchdogAlarmName(), { when: context.deadlineAt });
+    }
+    return;
+  }
+
+  const { error, lastLogEntry } = buildPausedAutoRunWatchdogError(state, context);
+
+  await clearPersistentAutoRunActiveWatchdog();
+  if (autoRunWatchdogReject) {
+    autoRunWatchdogTriggered = true;
+    clearAutoRunWatchdogTimer();
+    autoRunWatchdogReject(error);
+    autoRunWatchdogReject = null;
+    return;
+  }
+
+  await finalizePersistentAutoRunWatchdogTimeout(error, state, context, lastLogEntry);
 }
 
 async function handleMessage(message, sender) {
@@ -1588,6 +1641,7 @@ async function handleMessage(message, sender) {
       const currentState = await getState();
       const currentStepStatus = currentState?.stepStatuses?.[message.step];
       if (currentStepStatus === 'completed') {
+        notifyStepComplete(message.step, message.payload);
         return { ok: true };
       }
       if (stopRequested) {
@@ -2459,10 +2513,12 @@ function getTmailorOutcomeEmail(state) {
 }
 
 async function markTmailorOutcomePending(email) {
+  const nextTargetEmailAcquiredAt = String(email || '').trim() ? Date.now() : null;
   await setState({
     email,
     tmailorAccessToken: '',
     tmailorOutcomeRecorded: false,
+    lastTargetEmailAcquiredAt: nextTargetEmailAcquiredAt,
   });
   await setTmailorEmailLease({
     email,
@@ -2470,7 +2526,7 @@ async function markTmailorOutcomePending(email) {
     status: 'active',
     invalidReason: '',
   });
-  broadcastDataUpdate({ email });
+  broadcastDataUpdate({ email, lastTargetEmailAcquiredAt: nextTargetEmailAcquiredAt });
 }
 
 async function recordTmailorOutcome(result, context = {}) {
@@ -2711,6 +2767,13 @@ async function clearPersistentAutoRunPauseWatchdog() {
   await setState({ autoRunPauseWatchdog: null });
 }
 
+async function clearPersistentAutoRunActiveWatchdog() {
+  if (chrome.alarms?.clear) {
+    await chrome.alarms.clear(getAutoRunActiveWatchdogAlarmName()).catch(() => {});
+  }
+  await setState({ autoRunActiveWatchdog: null });
+}
+
 async function armPersistentAutoRunPauseWatchdog(context = {}) {
   const timeoutMs = Number.isFinite(context.timeoutMs) && context.timeoutMs > 0
     ? context.timeoutMs
@@ -2733,6 +2796,32 @@ async function armPersistentAutoRunPauseWatchdog(context = {}) {
   await setState({ autoRunPauseWatchdog: nextContext });
   if (chrome.alarms?.create) {
     await chrome.alarms.create(getAutoRunPauseWatchdogAlarmName(), { when: deadlineAt });
+  }
+  return nextContext;
+}
+
+async function armPersistentAutoRunActiveWatchdog(context = {}) {
+  const timeoutMs = Number.isFinite(context.timeoutMs) && context.timeoutMs > 0
+    ? context.timeoutMs
+    : AUTO_RUN_LOG_SILENCE_TIMEOUT_MS;
+  const deadlineAt = getAutoRunPauseWatchdogDeadline({
+    timeoutMs,
+    now: Date.now(),
+  });
+  const nextContext = {
+    phase: 'running',
+    currentRun: Number.parseInt(String(context.currentRun ?? '').trim(), 10) || 0,
+    totalRuns: context.infiniteMode
+      ? 0
+      : (Number.parseInt(String(context.totalRuns ?? '').trim(), 10) || 0),
+    infiniteMode: Boolean(context.infiniteMode),
+    timeoutMs,
+    deadlineAt,
+  };
+
+  await setState({ autoRunActiveWatchdog: nextContext });
+  if (chrome.alarms?.create) {
+    await chrome.alarms.create(getAutoRunActiveWatchdogAlarmName(), { when: deadlineAt });
   }
   return nextContext;
 }
@@ -2761,7 +2850,8 @@ function buildPausedAutoRunWatchdogError(state = {}, context = {}) {
   };
 }
 
-async function finalizePersistentAutoRunPauseWatchdogTimeout(error, state = {}, context = {}, lastLogEntry = null) {
+async function finalizePersistentAutoRunWatchdogTimeout(error, state = {}, context = {}, lastLogEntry = null) {
+  await clearPersistentAutoRunActiveWatchdog();
   await clearPersistentAutoRunPauseWatchdog();
   resetAutoRunWatchdog({ preserveLastLog: true });
   cancelPendingCommands();
@@ -2834,6 +2924,7 @@ function clearAutoRunWatchdogTimer() {
 
 function resetAutoRunWatchdog({ preserveLastLog = false } = {}) {
   clearAutoRunWatchdogTimer();
+  void clearPersistentAutoRunActiveWatchdog().catch(() => {});
   autoRunWatchdogGeneration += 1;
   autoRunWatchdogPromise = null;
   autoRunWatchdogReject = null;
@@ -2895,6 +2986,12 @@ function startAutoRunWatchdog() {
   resetAutoRunWatchdog();
   ensureAutoRunWatchdogPromise();
   autoRunWatchdogLastActivityAt = Date.now();
+  void armPersistentAutoRunActiveWatchdog({
+    currentRun: autoRunCurrentRun,
+    totalRuns: autoRunTotalRuns,
+    infiniteMode: autoRunInfinite,
+    timeoutMs: AUTO_RUN_LOG_SILENCE_TIMEOUT_MS,
+  }).catch(() => {});
   scheduleAutoRunWatchdog();
 }
 
@@ -2905,6 +3002,7 @@ function suspendAutoRunWatchdog() {
 
   autoRunWatchdogSuspended = true;
   clearAutoRunWatchdogTimer();
+  void clearPersistentAutoRunActiveWatchdog().catch(() => {});
 }
 
 function resumeAutoRunWatchdog({ resetActivity = true } = {}) {
@@ -2916,6 +3014,12 @@ function resumeAutoRunWatchdog({ resetActivity = true } = {}) {
   if (resetActivity) {
     autoRunWatchdogLastActivityAt = Date.now();
   }
+  void armPersistentAutoRunActiveWatchdog({
+    currentRun: autoRunCurrentRun,
+    totalRuns: autoRunTotalRuns,
+    infiniteMode: autoRunInfinite,
+    timeoutMs: AUTO_RUN_LOG_SILENCE_TIMEOUT_MS,
+  }).catch(() => {});
   scheduleAutoRunWatchdog();
 }
 
@@ -2934,6 +3038,12 @@ function touchAutoRunWatchdog(entry = null) {
   }
 
   if (!autoRunWatchdogSuspended) {
+    void armPersistentAutoRunActiveWatchdog({
+      currentRun: autoRunCurrentRun,
+      totalRuns: autoRunTotalRuns,
+      infiniteMode: autoRunInfinite,
+      timeoutMs: AUTO_RUN_LOG_SILENCE_TIMEOUT_MS,
+    }).catch(() => {});
     scheduleAutoRunWatchdog();
   }
 }

@@ -10,6 +10,7 @@
   const STOP_ERROR_MESSAGE = 'Flow stopped by user.';
   const AUTO_RUN_HANDOFF_MESSAGE = 'Auto run handed off to manual continuation.';
   const AUTO_RUN_LOG_SILENCE_ERROR_PREFIX = 'Auto run watchdog detected ';
+  const AUTO_RUN_ACTIVE_WATCHDOG_ALARM_NAME = 'infinitoai-auto-run-active-watchdog';
   const AUTO_RUN_PAUSED_WATCHDOG_ALARM_NAME = 'infinitoai-auto-run-paused-watchdog';
   const DEFAULT_AUTO_RUN_LOG_SILENCE_TIMEOUT_MS = 60000;
 
@@ -215,6 +216,10 @@
     return normalizedPhase === 'waiting_email' && Boolean(infiniteMode);
   }
 
+  function getAutoRunActiveWatchdogAlarmName() {
+    return AUTO_RUN_ACTIVE_WATCHDOG_ALARM_NAME;
+  }
+
   function getAutoRunPauseWatchdogAlarmName() {
     return AUTO_RUN_PAUSED_WATCHDOG_ALARM_NAME;
   }
@@ -388,6 +393,7 @@
     buildAutoRunStatusPayload,
     buildAutoRunFailureRecord,
     formatAutoRunLabel,
+    getAutoRunActiveWatchdogAlarmName,
     getAutoRunPauseWatchdogAlarmName,
     getAutoRunPauseWatchdogDeadline,
     isAutoRunLogSilenceError,

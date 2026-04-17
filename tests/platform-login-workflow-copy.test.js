@@ -67,6 +67,20 @@ test('shared and high-frequency warn-ok-error logs prefer Chinese user-facing co
   assert.match(vpsSource, /认证成功/);
 });
 
+test('background tracks when the current target mailbox was last acquired for side panel stats timers', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(backgroundSource, /lastTargetEmailAcquiredAt:\s*null,/);
+  assert.match(
+    backgroundSource,
+    /async function setEmailState\(email,\s*options = \{\}\) \{[\s\S]*lastTargetEmailAcquiredAt:\s*nextTargetEmailAcquiredAt/,
+  );
+  assert.match(
+    backgroundSource,
+    /broadcastDataUpdate\(\{\s*email,\s*lastTargetEmailAcquiredAt:\s*nextTargetEmailAcquiredAt\s*\}\);/,
+  );
+});
+
 test('side panel workflow labels describe the platform login and continue flow', () => {
   const sidepanelHtml = readProjectFile(path.join('sidepanel', 'sidepanel.html'));
 
@@ -713,6 +727,41 @@ test('step 5 completion is revalidated against the live auth page before the bac
   assert.match(
     backgroundSource,
     /validateStep5CompletionBeforeAcceptingSuccess\(payload = \{\}\) \{[\s\S]*const pageState = await waitForStep5AuthStateToSettle\(\);[\s\S]*pageState\?\.hasUnsupportedEmail[\s\S]*pageState\?\.hasReadyProfilePage[\s\S]*pageState\?\.hasVisibleProfileFormInput/i
+  );
+});
+
+test('background still resolves step waiters when a replayed step reports STEP_COMPLETE after the step was already marked completed', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /if \(currentStepStatus === 'completed'\) \{\s*notifyStepComplete\(message\.step,\s*message\.payload\);\s*return \{ ok: true \};\s*\}/i
+  );
+});
+
+test('active auto-run watchdog uses a persistent alarm fallback so MV3 worker restarts do not disable stall detection', () => {
+  const backgroundSource = readProjectFile('background.js');
+  const autoRunSource = readProjectFile(path.join('shared', 'auto-run.js'));
+
+  assert.match(
+    autoRunSource,
+    /AUTO_RUN_ACTIVE_WATCHDOG_ALARM_NAME = 'infinitoai-auto-run-active-watchdog'[\s\S]*function getAutoRunActiveWatchdogAlarmName\(\)/i
+  );
+  assert.match(
+    backgroundSource,
+    /chrome\.alarms\.onAlarm\.addListener\(\(alarm\) => \{[\s\S]*getAutoRunActiveWatchdogAlarmName\(\)[\s\S]*handlePersistentActiveAutoRunWatchdogAlarm\(\)/i
+  );
+  assert.match(
+    backgroundSource,
+    /function startAutoRunWatchdog\(\) \{[\s\S]*armPersistentAutoRunActiveWatchdog\(/i
+  );
+  assert.match(
+    backgroundSource,
+    /function touchAutoRunWatchdog\(entry = null\) \{[\s\S]*armPersistentAutoRunActiveWatchdog\(/i
+  );
+  assert.match(
+    backgroundSource,
+    /async function handlePersistentActiveAutoRunWatchdogAlarm\(\) \{[\s\S]*if \(autoRunWatchdogReject\) \{[\s\S]*autoRunWatchdogReject\(error\);[\s\S]*\}[\s\S]*await finalizePersistentAutoRunWatchdogTimeout\(/i
   );
 });
 
