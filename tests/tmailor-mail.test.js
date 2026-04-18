@@ -5039,6 +5039,154 @@ test('tmailor production flow waits 5 seconds before the first checkbox click du
   assert.ok(firstDebuggerClickAt >= 5000, `expected the first checkbox click after the 5s observe window, got ${firstDebuggerClickAt}`);
 });
 
+test('tmailor asks background to reload the mailbox when a Cloudflare click opens an ad tab', async () => {
+  const context = createContext();
+  const state = context.__state;
+  let now = 0;
+  let phase = 'ready';
+  let responseToken = '';
+  let newEmailClicks = 0;
+  const currentEmailInput = {
+    value: 'currentbox@fbhotro.com',
+    disabled: false,
+    getAttribute(name) {
+      if (name === 'placeholder' || name === 'aria-label') {
+        return 'Your Temp Mail Address';
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 120, top: 430, width: 520, height: 64 };
+    },
+  };
+  context.Date = class extends Date {
+    static now() {
+      return now;
+    }
+  };
+
+  const turnstileContainer = {
+    tagName: 'DIV',
+    className: 'cf-turnstile h-[80px] flex items-center justify-center',
+    getBoundingClientRect() {
+      return { left: 186, top: 529, width: 300, height: 80 };
+    },
+  };
+  const confirmButton = {
+    id: 'btnNewEmailForm',
+    tagName: 'BUTTON',
+    textContent: 'Confirm',
+    disabled: false,
+    getAttribute(name) {
+      if (name === 'aria-disabled') return 'false';
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 275, top: 621, width: 122, height: 41 };
+    },
+  };
+  const newEmailButton = {
+    id: 'btnNewEmail',
+    tagName: 'BUTTON',
+    textContent: 'New Email',
+    disabled: false,
+    getBoundingClientRect() {
+      return { left: 188, top: 621, width: 120, height: 41 };
+    },
+  };
+
+  context.document.body = {
+    get innerText() {
+      return phase === 'challenge' ? 'Please verify that you are not a robot. Confirm' : '';
+    },
+    set innerText(value) {
+      state.bodyText = value;
+    },
+  };
+  context.document.querySelector = (selector) => {
+    if (selector === '#btnNewEmail') {
+      return newEmailButton;
+    }
+    if (selector === '#btnNewEmailForm') {
+      return confirmButton;
+    }
+    if (selector === '.cf-turnstile' || selector.includes('.cf-turnstile') || selector.includes('.html-captcha')) {
+      return phase === 'challenge' ? turnstileContainer : null;
+    }
+    if (selector.includes('input[name="cf-turnstile-response"]')) {
+      return phase === 'challenge' || responseToken ? { value: responseToken } : null;
+    }
+    if (selector === 'input[name="currentEmailAddress"]') {
+      return currentEmailInput;
+    }
+    if (selector === '#refresh-inboxs') {
+      return phase === 'ready' ? {
+        id: 'refresh-inboxs',
+        tagName: 'BUTTON',
+        textContent: 'Refresh',
+        getBoundingClientRect() {
+          return { left: 320, top: 621, width: 120, height: 41 };
+        },
+      } : null;
+    }
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [newEmailButton, confirmButton];
+    }
+    if (selector === 'input, textarea') {
+      return [currentEmailInput];
+    }
+    return [];
+  };
+  context.chrome.runtime.sendMessage = (message, callback) => {
+    state.runtimeMessages = state.runtimeMessages || [];
+    state.runtimeMessages.push(message);
+    let response = { ok: true };
+    if (message.type === 'DEBUGGER_CLICK_AT') {
+      responseToken = 'verified-token-after-click';
+    } else if (message.type === 'TMAILOR_CLOSE_POPUP_AD_TAB') {
+      response = {
+        ok: true,
+        popupClosed: true,
+        closedTabIds: [9876],
+        closedUrls: ['https://ads.example/popup'],
+      };
+    }
+    if (typeof callback === 'function') {
+      callback(response);
+    }
+    return Promise.resolve(response);
+  };
+  context.simulateClick = (target) => {
+    state.clicked += 1;
+    state.lastClicked = target;
+    if (target === newEmailButton) {
+      newEmailClicks += 1;
+      phase = 'challenge';
+    }
+  };
+  context.sleep = async (ms = 0) => {
+    now += ms;
+  };
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.fetchTmailorEmail, 'expected tmailor to expose fetchTmailorEmail');
+
+  const result = await hooks.fetchTmailorEmail({ generateNew: true, domainState: {} });
+
+  assert.equal(newEmailClicks, 1);
+  assert.equal(result?.recovery, 'reload_mailbox');
+  assert.equal(result?.reason, 'popup_ad_tab_opened');
+  assert.match(String(result?.error || ''), /popup ad tab opened during cloudflare click/i);
+  assert.ok(
+    state.logs.some((entry) => /cloudflare .* opened a new tab .* closing it and requesting mailbox reload/i.test(entry.message)),
+    'expected a popup-ad recovery log'
+  );
+});
+
 test('tmailor default Cloudflare timeout allows a token that appears after 13 seconds', async () => {
   const context = createContext();
   const state = context.__state;
