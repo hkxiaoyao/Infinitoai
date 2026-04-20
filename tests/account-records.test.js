@@ -6,6 +6,7 @@ const path = require('node:path');
 const {
   createAccountRecord,
   normalizeAccountRecords,
+  shouldPersistAccountRecord,
   updateAccountRecordStatus,
   buildAccountRecordsCsv,
 } = require('../shared/account-records.js');
@@ -100,6 +101,35 @@ test('account records keep only the last record for the same email', () => {
   assert.equal(records[0].statusDetail, 'second detail');
 });
 
+test('account records can keep only successful entries when success-only mode is enabled', () => {
+  const records = normalizeAccountRecords([
+    createAccountRecord({
+      id: 'acct_pending',
+      email: 'pending@example.com',
+      password: 'pending-pass',
+      status: 'pending',
+    }),
+    createAccountRecord({
+      id: 'acct_success',
+      email: 'success@example.com',
+      password: 'success-pass',
+      status: 'success',
+    }),
+    createAccountRecord({
+      id: 'acct_other',
+      email: 'other@example.com',
+      password: 'other-pass',
+      status: 'other',
+    }),
+  ], {
+    successOnly: true,
+  });
+
+  assert.deepEqual(records.map((record) => record.id), ['acct_success']);
+  assert.equal(shouldPersistAccountRecord(records[0], { successOnly: true }), true);
+  assert.equal(shouldPersistAccountRecord({ status: 'pending' }, { successOnly: true }), false);
+});
+
 test('background persists account records and broadcasts them to the side panel', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 
@@ -107,6 +137,8 @@ test('background persists account records and broadcasts them to the side panel'
   assert.match(source, /const ACCOUNT_RECORDS_KEY = 'accountRecords';/);
   assert.match(source, /broadcastDataUpdate\(\{ accountRecords: nextRecords \}\)/);
   assert.match(source, /currentAccountRecordId/);
+  assert.match(source, /persistentUpdates\.accountSuccessOnly/);
+  assert.match(source, /shouldPersistAccountRecord/);
 });
 
 test('background clears persisted account records and resets the current account pointer', () => {

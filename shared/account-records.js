@@ -58,7 +58,14 @@
     return createAccountRecord(record);
   }
 
-  function normalizeAccountRecords(records = []) {
+  function shouldPersistAccountRecord(record = {}, options = {}) {
+    if (!options?.successOnly) {
+      return true;
+    }
+    return normalizeAccountStatus(record?.status) === 'success';
+  }
+
+  function normalizeAccountRecords(records = [], options = {}) {
     if (!Array.isArray(records)) {
       return [];
     }
@@ -66,9 +73,10 @@
     const normalizedRecords = records
       .map(normalizeAccountRecord)
       .filter((record) => record.email || record.password);
+    const filteredRecords = normalizedRecords.filter((record) => shouldPersistAccountRecord(record, options));
 
     const dedupedRecords = new Map();
-    for (const record of normalizedRecords) {
+    for (const record of filteredRecords) {
       const key = record.email ? `email:${record.email}` : `id:${record.id}`;
       if (dedupedRecords.has(key)) {
         dedupedRecords.delete(key);
@@ -155,6 +163,7 @@
     normalizeAccountRecords,
     normalizeAccountStatus,
     patchAccountRecord,
+    shouldPersistAccountRecord,
     updateAccountRecordStatus,
   };
 });

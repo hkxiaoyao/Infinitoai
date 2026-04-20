@@ -62,6 +62,7 @@ const {
   createAccountRecord,
   normalizeAccountRecords,
   patchAccountRecord,
+  shouldPersistAccountRecord,
   updateAccountRecordStatus,
 } = AccountRecords;
 const {
@@ -355,12 +356,12 @@ async function loadPersistentTmailorDomainSeeds() {
 }
 
 async function getState() {
-  const [sessionState, persistentSettings, tmailorDomainState, autoRunStats, accountRecords] = await Promise.all([
+  const persistentSettings = await getPersistentSettings();
+  const [sessionState, tmailorDomainState, autoRunStats, accountRecords] = await Promise.all([
     chrome.storage.session.get(null),
-    getPersistentSettings(),
     getPersistentTmailorDomainState(),
     getPersistentAutoRunStats(),
-    getPersistentAccountRecords(),
+    getPersistentAccountRecords({ successOnly: persistentSettings.accountSuccessOnly }),
   ]);
   return { ...DEFAULT_STATE, ...sessionState, ...persistentSettings, tmailorDomainState, autoRunStats, accountRecords };
 }
@@ -383,7 +384,7 @@ async function setState(updates) {
   await chrome.storage.session.set(updates);
 }
 
-async function getPersistentAccountRecords() {
+async function getPersistentAccountRecords(options = {}) {
   const [localState, sessionState] = await Promise.all([
     chrome.storage.local.get(ACCOUNT_RECORDS_KEY),
     chrome.storage.session.get(ACCOUNT_RECORDS_KEY),
@@ -394,7 +395,8 @@ async function getPersistentAccountRecords() {
   const mergedRecords = normalizeAccountRecords(
     localStored !== undefined
       ? localStored
-      : (sessionStored !== undefined ? sessionStored : DEFAULT_STATE.accountRecords)
+      : (sessionStored !== undefined ? sessionStored : DEFAULT_STATE.accountRecords),
+    { successOnly: options.successOnly }
   );
 
   const localStoredJson = JSON.stringify(localStored || null);
@@ -413,13 +415,17 @@ async function getPersistentAccountRecords() {
   return mergedRecords;
 }
 
-async function setPersistentAccountRecords(nextRecords) {
-  const normalizedRecords = normalizeAccountRecords(nextRecords);
+async function setPersistentAccountRecords(nextRecords, options = {}) {
+  const normalizedRecords = normalizeAccountRecords(nextRecords, { successOnly: options.successOnly });
   await Promise.all([
     chrome.storage.local.set({ [ACCOUNT_RECORDS_KEY]: normalizedRecords }),
     chrome.storage.session.set({ [ACCOUNT_RECORDS_KEY]: normalizedRecords }),
   ]);
   return normalizedRecords;
+}
+
+function isSuccessOnlyAccountRecordsEnabled(state = {}) {
+  return state.accountSuccessOnly !== false;
 }
 
 async function getPersistentAutoRunStats() {
@@ -632,11 +638,19 @@ function findAccountRecordIndex(records, recordId) {
 
 async function createOrReuseCurrentAccountRecord(payload = {}) {
   const state = await getState();
-  const records = normalizeAccountRecords(state.accountRecords);
+  const successOnly = isSuccessOnlyAccountRecordsEnabled(state);
+  const records = normalizeAccountRecords(state.accountRecords, { successOnly });
   const email = String(payload.email || state.email || '').trim().toLowerCase();
   const password = String(payload.password || state.password || '').trim();
+  const nextStatus = payload.status === undefined ? 'pending' : payload.status;
+  const nextStatusDetail = String(payload.statusDetail || '').trim();
 
   if (!email || !password) {
+    return null;
+  }
+
+  if (successOnly && !shouldPersistAccountRecord({ status: nextStatus }, { successOnly })) {
+    await setState({ currentAccountRecordId: null });
     return null;
   }
 
