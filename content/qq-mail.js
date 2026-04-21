@@ -368,7 +368,11 @@ function extractVerificationCode(text) {
   const matchCn = text.match(/(?:代码为|验证码[^0-9]*?)[\s：:]*(\d{6})/);
   if (matchCn) return matchCn[1];
 
-  // Pattern 2: English format "code is 370794" or "code: 370794"
+  // Pattern 2: Japanese format "認証コード: 370794" or "確認コードは 370794"
+  const matchJa = text.match(/(?:(?:認証|確認)?コード)\s*(?:は|[:：])?\s*(\d{6})/i);
+  if (matchJa) return matchJa[1];
+
+  // Pattern 3: English format "code is 370794" or "code: 370794"
   const matchEn = text.match(/code[:\s]+is[:\s]+(\d{6})|code[:\s]+(\d{6})/i);
   if (matchEn) return matchEn[1] || matchEn[2];
 

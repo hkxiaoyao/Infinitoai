@@ -74,6 +74,9 @@ function extractVerificationCode(text) {
   const matchCn = text.match(/(?:代码为|验证码[^0-9]*?)[\s：:]*(\d{6})/);
   if (matchCn) return matchCn[1];
 
+  const matchJa = text.match(/(?:(?:認証|確認)?コード)\s*(?:は|[:：])?\s*(\d{6})/i);
+  if (matchJa) return matchJa[1];
+
   const matchEn = text.match(/code[:\s]+is[:\s]+(\d{6})|code[:\s]+(\d{6})/i);
   if (matchEn) return matchEn[1] || matchEn[2];
 
@@ -97,7 +100,7 @@ function rowMatchesFilters(step, mail, senderFilters, subjectFilters, targetEmai
   const mailboxMatch = Boolean(targetLocal) && mailbox.includes(targetLocal);
   const forwardedDuck = /duckduckgo|forward(?:ed)?\s*by/i.test(mail.combinedText);
   const code = extractVerificationCode(mail.combinedText);
-  const keywordMatch = /openai|chatgpt|verify|verification|confirm|login|验证码|代码/.test(combined);
+  const keywordMatch = /openai|chatgpt|verify|verification|confirm|login|验证码|代码|認証|確認|コード|ログイン/.test(combined);
 
   if (mailboxMatch) return { matched: true, mailboxMatch, code };
   if (stepSpecificSubjectMatch) return { matched: true, mailboxMatch: false, code };

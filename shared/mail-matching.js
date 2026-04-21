@@ -8,13 +8,25 @@
   root.MailMatching = exports;
 })(typeof globalThis !== 'undefined' ? globalThis : self, function() {
   const BRAND_PATTERN = '(?:chatgpt|openai)';
-  const REGISTRATION_CN_SUBJECT = new RegExp(`你的\\s*${BRAND_PATTERN}\\s*代码为`, 'i');
-  const VERIFICATION_EN_SUBJECT = new RegExp(`your\\s*${BRAND_PATTERN}\\s*code\\s*is`, 'i');
+  const REGISTRATION_CN_SUBJECT = new RegExp(
+    `(?:你(?:的)?|您(?:的)?)?\\s*(?:临时\\s*)?${BRAND_PATTERN}\\s*(?:代码为|验证码)`,
+    'i'
+  );
+  const VERIFICATION_EN_SUBJECT = new RegExp(
+    `your\\s*(?:temporary\\s*)?${BRAND_PATTERN}\\s*(?:(?:verification|login)\\s*)?code(?:\\s*is)?`,
+    'i'
+  );
+  const VERIFICATION_JA_SUBJECT = new RegExp(
+    `${BRAND_PATTERN}\\s*(?:の\\s*)?(?:一時\\s*)?(?:認証コード|確認コード|コード)`,
+    'i'
+  );
   const LOGIN_INTENT_PATTERNS = [
     /\b(?:log(?:[\s-]*in)|login|sign(?:[\s-]*in)|signin)\b/i,
     /继续登录/i,
     /登入/i,
     /登录/i,
+    /ログイン/i,
+    /サインイン/i,
   ];
   const SIGNUP_INTENT_PATTERNS = [
     /\b(?:sign\s*up|signup|register|registration)\b/i,
@@ -24,19 +36,21 @@
     /注册/i,
     /完成帐户创建/i,
     /完成账户创建/i,
+    /アカウント(?:を)?(?:作成|登録)/i,
+    /(?:新規)?登録(?:を)?完了/i,
   ];
 
   const STEP_MAIL_MATCH_PROFILES = {
     4: {
-      include: [REGISTRATION_CN_SUBJECT, VERIFICATION_EN_SUBJECT],
+      include: [REGISTRATION_CN_SUBJECT, VERIFICATION_EN_SUBJECT, VERIFICATION_JA_SUBJECT],
       exclude: [],
     },
     7: {
-      include: [REGISTRATION_CN_SUBJECT, VERIFICATION_EN_SUBJECT],
+      include: [REGISTRATION_CN_SUBJECT, VERIFICATION_EN_SUBJECT, VERIFICATION_JA_SUBJECT],
       exclude: [],
     },
     9: {
-      include: [REGISTRATION_CN_SUBJECT, VERIFICATION_EN_SUBJECT],
+      include: [REGISTRATION_CN_SUBJECT, VERIFICATION_EN_SUBJECT, VERIFICATION_JA_SUBJECT],
       exclude: [],
     },
   };
@@ -50,6 +64,27 @@
 
   function getStepMailMatchProfile(step) {
     return STEP_MAIL_MATCH_PROFILES[step] || null;
+  }
+
+  function getVerificationMailIntent(detailText) {
+    const text = normalizeText(detailText);
+    if (!text) {
+      return 'unknown';
+    }
+
+    const hasSignupIntent = SIGNUP_INTENT_PATTERNS.some((pattern) => pattern.test(text));
+    const hasLoginIntent = LOGIN_INTENT_PATTERNS.some((pattern) => pattern.test(text));
+
+    if (hasSignupIntent && hasLoginIntent) {
+      return 'mixed';
+    }
+    if (hasSignupIntent) {
+      return 'signup';
+    }
+    if (hasLoginIntent) {
+      return 'login';
+    }
+    return 'unknown';
   }
 
   function matchesSubjectPatterns(subject, profile) {
@@ -92,12 +127,8 @@
       return false;
     }
 
-    const text = normalizeText(detailText);
-    if (!text) {
-      return false;
-    }
-
-    return SIGNUP_INTENT_PATTERNS.some((pattern) => pattern.test(text));
+    const intent = getVerificationMailIntent(detailText);
+    return intent === 'signup' || intent === 'mixed';
   }
 
   function hasLoginVerificationMailDetail(step, detailText) {
@@ -106,15 +137,12 @@
       return false;
     }
 
-    const text = normalizeText(detailText);
-    if (!text) {
-      return false;
-    }
-
-    return LOGIN_INTENT_PATTERNS.some((pattern) => pattern.test(text));
+    const intent = getVerificationMailIntent(detailText);
+    return intent === 'login' || intent === 'mixed';
   }
 
   return {
+    getVerificationMailIntent,
     getStepMailMatchProfile,
     hasLoginVerificationMailDetail,
     hasSignupVerificationMailDetail,

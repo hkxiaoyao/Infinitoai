@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   getStepMailMatchProfile,
+  getVerificationMailIntent,
   hasSignupVerificationMailDetail,
   isExpectedVerificationMailDetail,
   matchesSubjectPatterns,
@@ -18,6 +19,24 @@ test('step 4 mail profile also accepts the Chinese OpenAI title', () => {
   const profile = getStepMailMatchProfile(4);
 
   assert.equal(matchesSubjectPatterns('你的 OpenAI 代码为 040535', profile), true);
+});
+
+test('step 4 mail profile accepts the latest Chinese temporary OpenAI verification title', () => {
+  const profile = getStepMailMatchProfile(4);
+
+  assert.equal(matchesSubjectPatterns('您的临时OpenAI验证码', profile), true);
+});
+
+test('step 4 mail profile accepts the latest English temporary OpenAI verification title', () => {
+  const profile = getStepMailMatchProfile(4);
+
+  assert.equal(matchesSubjectPatterns('Your temporary OpenAI verification code', profile), true);
+});
+
+test('step 4 mail profile accepts a Japanese OpenAI verification title', () => {
+  const profile = getStepMailMatchProfile(4);
+
+  assert.equal(matchesSubjectPatterns('OpenAI 認証コード', profile), true);
 });
 
 test('step 4 mail profile also accepts the English verification title', () => {
@@ -37,8 +56,10 @@ test('step 7 mail profile accepts both English and Chinese OpenAI verification t
 
   assert.equal(matchesSubjectPatterns('Your ChatGPT code is 281878', profile), true);
   assert.equal(matchesSubjectPatterns('Your OpenAI code is 281878', profile), true);
+  assert.equal(matchesSubjectPatterns('Your temporary ChatGPT login code', profile), true);
   assert.equal(matchesSubjectPatterns('你的 ChatGPT 代码为 040535', profile), true);
   assert.equal(matchesSubjectPatterns('你的 OpenAI 代码为 040535', profile), true);
+  assert.equal(matchesSubjectPatterns('您的临时OpenAI验证码', profile), true);
 });
 
 test('step 9 reuses the later verification title profile for both English and Chinese verification titles', () => {
@@ -88,5 +109,28 @@ test('step 7 detail matching accepts unicode-hyphen log-in wording from OpenAI m
   assert.equal(
     isExpectedVerificationMailDetail(7, 'ChatGPT Log‑in Code. We noticed a suspicious log‑in on your account. If that was you, enter this code: 549235.'),
     true
+  );
+});
+
+test('verification mail intent detection distinguishes signup login and neutral wording', () => {
+  assert.equal(
+    getVerificationMailIntent('Your OpenAI code is 112233. Use this code to continue creating your account.'),
+    'signup'
+  );
+  assert.equal(
+    getVerificationMailIntent('Your OpenAI code is 223344. Use this code to continue login.'),
+    'login'
+  );
+  assert.equal(
+    getVerificationMailIntent('Enter this temporary code to continue: 665544.'),
+    'unknown'
+  );
+  assert.equal(
+    getVerificationMailIntent('このコードを使ってアカウント登録を完了してください。'),
+    'signup'
+  );
+  assert.equal(
+    getVerificationMailIntent('このコードを使ってログインしてください。'),
+    'login'
   );
 });
