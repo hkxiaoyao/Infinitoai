@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   checkTmailorApiConnectivity,
   createTmailorApiCaptchaCooldownUntil,
+  extractVerificationCode,
   fetchAllowedTmailorEmail,
   isTmailorApiCaptchaCooldownActive,
   pollTmailorVerificationCode,
@@ -22,6 +23,30 @@ function createJsonResponse(body, status = 200) {
     },
   };
 }
+
+test('extractVerificationCode supports Japanese verification copy', () => {
+  assert.equal(extractVerificationCode('認証コード: 551266'), '551266');
+  assert.equal(extractVerificationCode('確認コードは 223344 です'), '223344');
+});
+
+test('extractVerificationCode ignores css/html noise before the real code in api mail bodies', () => {
+  const html = `
+    <html>
+      <head>
+        <title>您的临时OpenAI验证码</title>
+        <style>
+          .top { color: #202123; }
+        </style>
+      </head>
+      <body>
+        <p>输入此临时验证码以继续：</p>
+        <p>642010</p>
+      </body>
+    </html>
+  `;
+
+  assert.equal(extractVerificationCode(html), '642010');
+});
 
 test('fetchAllowedTmailorEmail keeps requesting new mailboxes until the domain passes current rules', async () => {
   const calls = [];
@@ -234,6 +259,264 @@ test('pollTmailorVerificationCode falls back to the read API when inbox preview 
   assert.equal(result.listId, 'list-2');
 });
 
+test('pollTmailorVerificationCode accepts the latest Chinese temporary OpenAI title and reads the code from detail', async () => {
+  const now = new Date('2026-04-10T10:00:00.000Z').getTime();
+  const fetchImpl = async (_url, options = {}) => {
+    const payload = JSON.parse(options.body);
+    if (payload.action === 'listinbox') {
+      return createJsonResponse({
+        msg: 'ok',
+        code: 'list-temp-openai-1',
+        data: {
+          item1: {
+            id: 'mail-temp-openai-1',
+            email_id: 'detail-temp-openai-1',
+            subject: '您的临时OpenAI验证码',
+            from: 'noreply@tm.openai.com',
+            created_at: new Date(now).toISOString(),
+          },
+        },
+      });
+    }
+    if (payload.action === 'read') {
+      return createJsonResponse({
+        msg: 'ok',
+        data: {
+          subject: '您的临时OpenAI验证码',
+          body: '输入此临时验证码以继续：551266',
+        },
+      });
+    }
+    throw new Error(`Unexpected action: ${payload.action}`);
+  };
+
+  const result = await pollTmailorVerificationCode({
+    fetchImpl,
+    accessToken: 'token-temp-openai-1',
+    step: 4,
+    filterAfterTimestamp: now - 60_000,
+    maxAttempts: 1,
+    intervalMs: 0,
+    now,
+  });
+
+  assert.equal(result.code, '551266');
+  assert.equal(result.mailId, 'mail-temp-openai-1');
+  assert.equal(result.listId, 'list-temp-openai-1');
+});
+
+test('pollTmailorVerificationCode falls back to the latest fresh message detail after 3 subject misses and accepts a neutral code', async () => {
+  const now = new Date('2026-04-10T10:00:00.000Z').getTime();
+  let listCalls = 0;
+
+  const fetchImpl = async (_url, options = {}) => {
+    const payload = JSON.parse(options.body);
+    if (payload.action === 'listinbox') {
+      listCalls += 1;
+      return createJsonResponse({
+        msg: 'ok',
+        code: `list-fallback-neutral-${listCalls}`,
+        data: {
+          item1: {
+            id: 'mail-fallback-neutral',
+            email_id: 'detail-fallback-neutral',
+            subject: 'OpenAI security notice',
+            from: 'noreply@tm.openai.com',
+            created_at: new Date(now + listCalls * 1000).toISOString(),
+          },
+        },
+      });
+    }
+    if (payload.action === 'read') {
+      return createJsonResponse({
+        msg: 'ok',
+        data: {
+          subject: 'OpenAI security notice',
+          body: 'Enter this temporary code to continue: 551266.',
+        },
+      });
+    }
+    throw new Error(`Unexpected action: ${payload.action}`);
+  };
+
+  const result = await pollTmailorVerificationCode({
+    fetchImpl,
+    accessToken: 'token-fallback-neutral',
+    step: 4,
+    filterAfterTimestamp: now - 60_000,
+    maxAttempts: 3,
+    intervalMs: 0,
+    now,
+  });
+
+  assert.equal(result.code, '551266');
+  assert.equal(result.mailId, 'mail-fallback-neutral');
+});
+
+test('pollTmailorVerificationCode fallback skips a latest step 4 mail whose detail clearly says login and waits for the next usable mail', async () => {
+  const now = new Date('2026-04-10T10:00:00.000Z').getTime();
+  let listCalls = 0;
+
+  const fetchImpl = async (_url, options = {}) => {
+    const payload = JSON.parse(options.body);
+    if (payload.action === 'listinbox') {
+      listCalls += 1;
+      if (listCalls < 4) {
+        return createJsonResponse({
+          msg: 'ok',
+          code: `list-fallback-step4-login-${listCalls}`,
+          data: {
+            item1: {
+              id: 'mail-fallback-step4-login',
+              email_id: 'detail-fallback-step4-login',
+              subject: 'OpenAI security notice',
+              from: 'noreply@tm.openai.com',
+              created_at: new Date(now + listCalls * 1000).toISOString(),
+            },
+          },
+        });
+      }
+
+      return createJsonResponse({
+        msg: 'ok',
+        code: 'list-fallback-step4-neutral-4',
+        data: {
+          item2: {
+            id: 'mail-fallback-step4-neutral',
+            email_id: 'detail-fallback-step4-neutral',
+            subject: 'OpenAI security notice',
+            from: 'noreply@tm.openai.com',
+            created_at: new Date(now + 5000).toISOString(),
+          },
+          item1: {
+            id: 'mail-fallback-step4-login',
+            email_id: 'detail-fallback-step4-login',
+            subject: 'OpenAI security notice',
+            from: 'noreply@tm.openai.com',
+            created_at: new Date(now + 3000).toISOString(),
+          },
+        },
+      });
+    }
+    if (payload.action === 'read') {
+      if (payload.email_code === 'mail-fallback-step4-login') {
+        return createJsonResponse({
+          msg: 'ok',
+          data: {
+            subject: 'OpenAI security notice',
+            body: 'Your OpenAI code is 112233. Use this code to continue login.',
+          },
+        });
+      }
+      if (payload.email_code === 'mail-fallback-step4-neutral') {
+        return createJsonResponse({
+          msg: 'ok',
+          data: {
+            subject: 'OpenAI security notice',
+            body: 'Enter this temporary code to continue: 665544.',
+          },
+        });
+      }
+    }
+    throw new Error(`Unexpected action: ${payload.action}`);
+  };
+
+  const result = await pollTmailorVerificationCode({
+    fetchImpl,
+    accessToken: 'token-fallback-step4-login',
+    step: 4,
+    filterAfterTimestamp: now - 60_000,
+    maxAttempts: 4,
+    intervalMs: 0,
+    now,
+  });
+
+  assert.equal(result.code, '665544');
+  assert.equal(result.mailId, 'mail-fallback-step4-neutral');
+});
+
+test('pollTmailorVerificationCode fallback skips a latest step 7 mail whose detail clearly says signup and waits for the next login mail', async () => {
+  const now = new Date('2026-04-10T10:00:00.000Z').getTime();
+  let listCalls = 0;
+
+  const fetchImpl = async (_url, options = {}) => {
+    const payload = JSON.parse(options.body);
+    if (payload.action === 'listinbox') {
+      listCalls += 1;
+      if (listCalls < 4) {
+        return createJsonResponse({
+          msg: 'ok',
+          code: `list-fallback-step7-signup-${listCalls}`,
+          data: {
+            item1: {
+              id: 'mail-fallback-step7-signup',
+              email_id: 'detail-fallback-step7-signup',
+              subject: 'Account security notice',
+              from: 'noreply@tm.openai.com',
+              created_at: new Date(now + listCalls * 1000).toISOString(),
+            },
+          },
+        });
+      }
+
+      return createJsonResponse({
+        msg: 'ok',
+        code: 'list-fallback-step7-login-4',
+        data: {
+          item2: {
+            id: 'mail-fallback-step7-login',
+            email_id: 'detail-fallback-step7-login',
+            subject: 'Account security notice',
+            from: 'noreply@tm.openai.com',
+            created_at: new Date(now + 5000).toISOString(),
+          },
+          item1: {
+            id: 'mail-fallback-step7-signup',
+            email_id: 'detail-fallback-step7-signup',
+            subject: 'Account security notice',
+            from: 'noreply@tm.openai.com',
+            created_at: new Date(now + 3000).toISOString(),
+          },
+        },
+      });
+    }
+    if (payload.action === 'read') {
+      if (payload.email_code === 'mail-fallback-step7-signup') {
+        return createJsonResponse({
+          msg: 'ok',
+          data: {
+            subject: 'Account security notice',
+            body: 'Your OpenAI code is 112233. Use this code to continue creating your account.',
+          },
+        });
+      }
+      if (payload.email_code === 'mail-fallback-step7-login') {
+        return createJsonResponse({
+          msg: 'ok',
+          data: {
+            subject: 'Account security notice',
+            body: 'Your OpenAI code is 223344. Use this code to continue login.',
+          },
+        });
+      }
+    }
+    throw new Error(`Unexpected action: ${payload.action}`);
+  };
+
+  const result = await pollTmailorVerificationCode({
+    fetchImpl,
+    accessToken: 'token-fallback-step7-signup',
+    step: 7,
+    filterAfterTimestamp: now - 60_000,
+    maxAttempts: 4,
+    intervalMs: 0,
+    now,
+  });
+
+  assert.equal(result.code, '223344');
+  assert.equal(result.mailId, 'mail-fallback-step7-login');
+});
+
 test('pollTmailorVerificationCode keeps retrying cached candidates when read times out after a successful listinbox', async () => {
   const now = new Date('2026-04-10T10:00:00.000Z').getTime();
   let listCalls = 0;
@@ -301,6 +584,58 @@ test('pollTmailorVerificationCode keeps retrying cached candidates when read tim
   assert.equal(result.listId, 'list-cache-b');
   assert.equal(listCalls, 2);
   assert.equal(readCalls, 2);
+});
+
+test('pollTmailorVerificationCode does not duplicate one logical candidate across repeated full-inbox polls', async () => {
+  const now = new Date('2026-04-10T10:00:00.000Z').getTime();
+  const matchedCounts = [];
+  let listCalls = 0;
+
+  const fetchImpl = async (_url, options = {}) => {
+    const payload = JSON.parse(options.body);
+    if (payload.action === 'listinbox') {
+      listCalls += 1;
+      return createJsonResponse({
+        msg: 'ok',
+        code: `list-stable-${listCalls}`,
+        data: {
+          item1: {
+            id: 'mail-stable-a',
+            email_id: 'detail-stable-a',
+            subject: 'Your ChatGPT code is ******',
+            from: 'OpenAI',
+            created_at: new Date(now + listCalls * 1000).toISOString(),
+          },
+        },
+      });
+    }
+
+    if (payload.action === 'read') {
+      return new Promise(() => {});
+    }
+
+    throw new Error(`Unexpected action: ${payload.action}`);
+  };
+
+  await assert.rejects(
+    () => pollTmailorVerificationCode({
+      fetchImpl,
+      accessToken: 'token-stable-cache',
+      step: 7,
+      filterAfterTimestamp: now - 60_000,
+      maxAttempts: 2,
+      maxRequestRetries: 0,
+      requestTimeoutMs: 5,
+      intervalMs: 0,
+      now,
+      onPollAttempt: async (event) => {
+        matchedCounts.push(event.matchedCount);
+      },
+    }),
+    /TMailor API inbox polling failed/i
+  );
+
+  assert.deepEqual(matchedCounts, [1, 1]);
 });
 
 test('pollTmailorVerificationCode ignores non-matching subjects and eventually returns the matching code', async () => {
@@ -509,6 +844,52 @@ test('pollTmailorVerificationCode skips a signup-style step 7 detail mail and wa
 
   assert.equal(result.code, '665544');
   assert.equal(result.mailId, 'mail-login-real');
+});
+
+test('pollTmailorVerificationCode step 7 accepts the latest Chinese temporary OpenAI title and relies on login body intent', async () => {
+  const now = new Date('2026-04-10T10:00:00.000Z').getTime();
+  const fetchImpl = async (_url, options = {}) => {
+    const payload = JSON.parse(options.body);
+    if (payload.action === 'listinbox') {
+      return createJsonResponse({
+        msg: 'ok',
+        code: 'list-login-temp-openai-1',
+        data: {
+          item1: {
+            id: 'mail-login-temp-openai-1',
+            email_id: 'detail-login-temp-openai-1',
+            subject: '您的临时OpenAI验证码',
+            from: 'noreply@tm.openai.com',
+            created_at: new Date(now).toISOString(),
+          },
+        },
+      });
+    }
+    if (payload.action === 'read') {
+      return createJsonResponse({
+        msg: 'ok',
+        data: {
+          subject: '您的临时OpenAI验证码',
+          body: '你的 OpenAI 代码为 223344。请输入此验证码以继续登录。',
+        },
+      });
+    }
+    throw new Error(`Unexpected action: ${payload.action}`);
+  };
+
+  const result = await pollTmailorVerificationCode({
+    fetchImpl,
+    accessToken: 'token-login-temp-openai-1',
+    step: 7,
+    filterAfterTimestamp: now - 60_000,
+    maxAttempts: 1,
+    intervalMs: 0,
+    now,
+  });
+
+  assert.equal(result.code, '223344');
+  assert.equal(result.mailId, 'mail-login-temp-openai-1');
+  assert.equal(result.listId, 'list-login-temp-openai-1');
 });
 
 test('pollTmailorVerificationCode retries transient listinbox failures before succeeding', async () => {

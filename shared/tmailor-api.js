@@ -86,6 +86,9 @@
   const isExpectedVerificationMailDetail = MailMatching?.isExpectedVerificationMailDetail || function() {
     return true;
   };
+  const getVerificationMailIntent = MailMatching?.getVerificationMailIntent || function() {
+    return 'unknown';
+  };
   const hasSignupVerificationMailDetail = MailMatching?.hasSignupVerificationMailDetail || function() {
     return false;
   };
@@ -332,16 +335,55 @@
     }
   }
 
+  function decodeHtmlEntities(text) {
+    return String(text || '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'");
+  }
+
+  function htmlToVisibleText(text) {
+    const raw = String(text || '');
+    if (!/[<>]/.test(raw)) {
+      return raw;
+    }
+
+    return decodeHtmlEntities(
+      raw
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, ' ')
+        .replace(/<!--[\s\S]*?-->/g, ' ')
+        .replace(/<[^>]+>/g, ' ')
+    );
+  }
+
   function extractVerificationCode(text) {
-    const normalized = String(text || '');
-    const matchCn = normalized.match(/(?:代码为|验证码[^0-9]*?)[\s：:]*(\d{6})/);
-    if (matchCn) return matchCn[1];
+    const raw = String(text || '');
+    const candidates = Array.from(new Set([
+      htmlToVisibleText(raw),
+      raw,
+    ].filter(Boolean)));
 
-    const matchEn = normalized.match(/code[:\s]+is[:\s]+(\d{6})|code[:\s]+(\d{6})/i);
-    if (matchEn) return matchEn[1] || matchEn[2];
+    for (const candidate of candidates) {
+      const normalized = String(candidate || '');
+      const matchCn = normalized.match(/(?:代码为|验证码[^0-9]*?)[\s：:]*(\d{6})/);
+      if (matchCn) return matchCn[1];
 
-    const match6 = normalized.match(/\b(\d{6})\b/);
-    if (match6) return match6[1];
+      const matchJa = normalized.match(/(?:(?:認証|確認)?コード)\s*(?:は|[:：])?\s*(\d{6})/i);
+      if (matchJa) return matchJa[1];
+
+      const matchEn = normalized.match(/code[:\s]+is[:\s]+(\d{6})|code[:\s]+(\d{6})/i);
+      if (matchEn) return matchEn[1] || matchEn[2];
+    }
+
+    for (const candidate of candidates) {
+      const match6 = String(candidate || '').match(/\b(\d{6})\b/);
+      if (match6) return match6[1];
+    }
 
     return '';
   }
@@ -356,13 +398,27 @@
     return Number.parseInt(String(step ?? 0), 10) === 7;
   }
 
+  function getLatestMailFallbackRejectionReason(step, detailText) {
+    const numericStep = Number.parseInt(String(step ?? 0), 10) || 0;
+    const intent = getVerificationMailIntent(detailText);
+    if (numericStep === 4 && intent === 'login') {
+      return 'login_intent';
+    }
+    if (numericStep === 7 && intent === 'signup') {
+      return 'signup_intent';
+    }
+    return '';
+  }
+
   function buildMessageCacheKey(message) {
     const id = String(message?.id || message?.mailId || message?.email_code || '').trim();
     const emailToken = String(message?.emailToken || message?.email_id || message?.email_token || '').trim();
-    const timestamp = Number(message?.timestamp) || 0;
+    if (id || emailToken) {
+      return [id, emailToken].join('|');
+    }
+    const from = normalizeText(message?.from || message?.sender || '');
     const subject = normalizeText(message?.subject || '');
-    const combinedText = normalizeText(message?.combinedText || message?.text || message?.body || '');
-    return [id, emailToken, timestamp, subject, combinedText].join('|');
+    return [from, subject].join('|');
   }
 
   function parseMessageTimestamp(message, now) {
@@ -515,10 +571,88 @@
 
     let lastListId = '';
     let lastApiError = null;
+    let consecutiveSubjectMissAttempts = 0;
     const pendingMessages = new Map();
-      if (typeof config.throwIfStopped === 'function') {
-        config.throwIfStopped();
+    const skippedLatestFallbackMessages = new Set();
+    if (typeof config.throwIfStopped === 'function') {
+      config.throwIfStopped();
+    }
+
+    async function tryResolveMessage(candidate, attempt, options = {}) {
+      const resolutionOptions = options || {};
+      const candidateKey = buildMessageCacheKey(candidate);
+      let code = extractVerificationCode(candidate.subject + ' ' + candidate.combinedText);
+      let detailText = candidate.subject + ' ' + candidate.combinedText;
+
+      if (!code || shouldInspectDetailBeforeAcceptingCode(config.step) || resolutionOptions.forceDetailRead) {
+        const detail = await retryTmailorApiOperation({
+          stage: 'read',
+          pollAttempt: attempt,
+          maxPollAttempts: maxAttempts,
+          maxRequestRetries,
+          retryDelayMs,
+          throwIfStopped: config.throwIfStopped,
+          sleep,
+          onRetry: config.onRetry,
+          run: () => readTmailorMessage({
+            fetchImpl: config.fetchImpl,
+            baseUrl: config.baseUrl,
+            accessToken: config.accessToken,
+            message: candidate,
+            signal: config.signal,
+            requestTimeoutMs,
+          }),
+        });
+        detailText = normalizeText(
+          String(detail.subject || '') + ' ' + String(detail.text || '') + ' ' + String(detail.body || '')
+        );
+        code = extractVerificationCode(
+          String(detail.subject || '') + ' ' + String(detail.text || '') + ' ' + String(detail.body || '')
+        );
       }
+
+      if (!code) {
+        if (resolutionOptions.excludeFromLatestFallback) {
+          skippedLatestFallbackMessages.add(candidateKey);
+        } else {
+          pendingMessages.delete(candidateKey);
+        }
+        return null;
+      }
+
+      if (resolutionOptions.allowLatestFallback) {
+        const fallbackRejectionReason = getLatestMailFallbackRejectionReason(config.step, detailText);
+        if (fallbackRejectionReason) {
+          skippedLatestFallbackMessages.add(candidateKey);
+          return null;
+        }
+      }
+
+      if (!isExpectedVerificationMailDetail(config.step, detailText)) {
+        if (resolutionOptions.allowLatestFallback) {
+          skippedLatestFallbackMessages.add(candidateKey);
+        } else if (hasSignupVerificationMailDetail(config.step, detailText)) {
+          pendingMessages.delete(candidateKey);
+        }
+        return null;
+      }
+
+      if (excludedCodeSet.has(code)) {
+        if (resolutionOptions.allowLatestFallback) {
+          skippedLatestFallbackMessages.add(candidateKey);
+        } else {
+          pendingMessages.delete(candidateKey);
+        }
+        return null;
+      }
+
+      return {
+        code: code,
+        emailTimestamp: candidate.timestamp || now,
+        mailId: candidate.id,
+        listId: lastListId,
+      };
+    }
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (typeof config.onPollStart === 'function') {
@@ -575,7 +709,24 @@
         lastListId = String(data.code);
       }
 
-      const messages = normalizeInboxMessages(data.data)
+      const inboxMessages = normalizeInboxMessages(data.data)
+        .map((message, listIndex) => {
+          const subject = normalizeText(message?.subject || '');
+          const from = normalizeText(message?.from || message?.sender || '');
+          const body = normalizeText(message?.combinedText || message?.text || message?.body || '');
+          return {
+            ...message,
+            id: message?.id || message?.mail_id || message?.email_code || '',
+            emailToken: message?.email_id || message?.email_token || '',
+            listIndex,
+            subject,
+            from,
+            combinedText: normalizeText(from + ' ' + subject + ' ' + body),
+            timestamp: parseMessageTimestamp(message, now),
+          };
+        });
+
+      const messages = inboxMessages
         .map((message) => ({
           raw: message,
           parsed: shouldMatchMessage(config.step, message, {
@@ -596,10 +747,28 @@
       const candidateMessages = Array.from(pendingMessages.values()).sort((left, right) => {
         const rightTimestamp = Number(right?.timestamp) || 0;
         const leftTimestamp = Number(left?.timestamp) || 0;
-        return rightTimestamp - leftTimestamp;
+        if (rightTimestamp !== leftTimestamp) {
+          return rightTimestamp - leftTimestamp;
+        }
+        return (Number(left?.listIndex) || 0) - (Number(right?.listIndex) || 0);
       });
+      const latestFallbackMessages = inboxMessages
+        .filter((message) => isMailFresh(message.timestamp, { now: now, filterAfterTimestamp: config.filterAfterTimestamp }))
+        .sort((left, right) => {
+          const rightTimestamp = Number(right?.timestamp) || 0;
+          const leftTimestamp = Number(left?.timestamp) || 0;
+          if (rightTimestamp !== leftTimestamp) {
+            return rightTimestamp - leftTimestamp;
+          }
+          return (Number(left?.listIndex) || 0) - (Number(right?.listIndex) || 0);
+        });
 
       const latestMatch = findLatestMatchingItem(candidateMessages, (message) => Boolean(message));
+      if (candidateMessages.length === 0) {
+        consecutiveSubjectMissAttempts += 1;
+      } else {
+        consecutiveSubjectMissAttempts = 0;
+      }
 
       if (typeof config.onPollAttempt === 'function') {
         await config.onPollAttempt({
@@ -615,67 +784,16 @@
         let readFailed = false;
 
         for (const candidate of candidateMessages) {
-          const candidateKey = buildMessageCacheKey(candidate);
-          let code = extractVerificationCode(candidate.subject + ' ' + candidate.combinedText);
-          let detailText = candidate.subject + ' ' + candidate.combinedText;
-
-          if (!code || shouldInspectDetailBeforeAcceptingCode(config.step)) {
-            let detail;
-            try {
-              detail = await retryTmailorApiOperation({
-                stage: 'read',
-                pollAttempt: attempt,
-                maxPollAttempts: maxAttempts,
-                maxRequestRetries,
-                retryDelayMs,
-                throwIfStopped: config.throwIfStopped,
-                sleep,
-                onRetry: config.onRetry,
-                run: () => readTmailorMessage({
-                  fetchImpl: config.fetchImpl,
-                  baseUrl: config.baseUrl,
-                  accessToken: config.accessToken,
-                  message: candidate,
-                  signal: config.signal,
-                  requestTimeoutMs,
-                }),
-              });
-            } catch (error) {
-              lastApiError = error;
-              readFailed = true;
-              break;
+          try {
+            const resolved = await tryResolveMessage(candidate, attempt);
+            if (resolved) {
+              return resolved;
             }
-            detailText = normalizeText(
-              String(detail.subject || '') + ' ' + String(detail.text || '') + ' ' + String(detail.body || '')
-            );
-            code = extractVerificationCode(
-              String(detail.subject || '') + ' ' + String(detail.text || '') + ' ' + String(detail.body || '')
-            );
+          } catch (error) {
+            lastApiError = error;
+            readFailed = true;
+            break;
           }
-
-          if (!code) {
-            pendingMessages.delete(candidateKey);
-            continue;
-          }
-
-          if (!isExpectedVerificationMailDetail(config.step, detailText)) {
-            if (hasSignupVerificationMailDetail(config.step, detailText)) {
-              pendingMessages.delete(candidateKey);
-            }
-            continue;
-          }
-
-          if (excludedCodeSet.has(code)) {
-            pendingMessages.delete(candidateKey);
-            continue;
-          }
-
-          return {
-            code: code,
-            emailTimestamp: candidate.timestamp || now,
-            mailId: candidate.id,
-            listId: lastListId,
-          };
         }
 
         if (readFailed) {
@@ -689,6 +807,38 @@
             continue;
           }
           break;
+        }
+      }
+
+      if (!latestMatch && consecutiveSubjectMissAttempts >= 3) {
+        const latestFallbackMessage = findLatestMatchingItem(
+          latestFallbackMessages,
+          (message) => !skippedLatestFallbackMessages.has(buildMessageCacheKey(message))
+        );
+
+        if (latestFallbackMessage) {
+          try {
+            const resolved = await tryResolveMessage(latestFallbackMessage, attempt, {
+              allowLatestFallback: true,
+              excludeFromLatestFallback: true,
+              forceDetailRead: true,
+            });
+            if (resolved) {
+              return resolved;
+            }
+          } catch (error) {
+            lastApiError = error;
+            if (attempt < maxAttempts) {
+              if (typeof config.throwIfStopped === 'function') {
+                config.throwIfStopped();
+              }
+              if (intervalMs > 0) {
+                await sleep(intervalMs);
+              }
+              continue;
+            }
+            break;
+          }
         }
       }
 
